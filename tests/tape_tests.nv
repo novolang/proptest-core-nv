@@ -1,0 +1,258 @@
+// tape_tests.nv — the API suite for the deterministic source, the
+// shrink walk and the property answers.
+//
+// RED ON PURPOSE: every body is a `todo()`.  Run with `--isolate` for
+// one verdict per `@test`.
+//
+// WHAT MAKES THESE CASES POSSIBLE AT ALL is the thing the package is
+// for: there is no randomness in it.  Every case below fixes a seed or
+// a transcript and asserts an exact answer, and none of them is
+// allowed to be flaky — which is the claim `[rand]` in a `core`
+// package would have made untestable.
+//
+// The row on every `@test` here is `[io]`, for `test.case` and nothing
+// else.  A generator that had needed the runtime's entropy would have
+// forced `[rand]` onto this file, and that is the check.
+//
+// THE STRATEGY COMBINATORS ARE NOT HERE.  They are in
+// `strategy_tests.nv`, which does not compile on this toolchain: a
+// generic function whose return type applies a generic head is not
+// emitted for a call from another module, and every combinator returns
+// a `PropStrategy<…>`.  That file's own header has the detail.
+
+use std.test
+use std.list
+use tape
+use shrink
+use propcheck
+
+@test
+fn test_a_seed_is_the_whole_of_the_state() [io]
+    test.case("a fresh tape reports the seed it was built from")
+    test.assert(tape.seed_of(tape.from_seed(42)) == 42)
+
+    test.case("and has drawn nothing yet")
+    test.assert(list.len(tape.choices_of(tape.from_seed(42))) == 0)
+
+    test.case("an unsealed tape never overruns")
+    test.assert(tape.is_overrun(tape.from_seed(42)) == false)
+    test.assert(tape.remaining(tape.from_seed(42)) == 0 - 1)
+
+@test
+fn test_the_same_seed_gives_the_same_choices() [io]
+    test.case("two tapes from one seed agree")
+    let (a, _) = tape.next(tape.from_seed(42), 1000)
+    let (b, _) = tape.next(tape.from_seed(42), 1000)
+    test.assert(a == b)
+
+    test.case("a draw is inside its bound")
+    test.assert(a >= 0)
+    test.assert(a < 1000)
+
+@test
+fn test_every_draw_is_recorded() [io]
+    test.case("one draw, one entry")
+    let (_, t1) = tape.next(tape.from_seed(42), 10)
+    test.assert(list.len(tape.choices_of(t1)) == 1)
+
+    test.case("a bound of one still consumes a slot")
+    let (n, t2) = tape.next(tape.from_seed(42), 1)
+    test.assert(n == 0)
+    test.assert(list.len(tape.choices_of(t2)) == 1)
+
+    test.case("and so does a bound of zero, so a shrink cannot shift the later slots")
+    let (z, t3) = tape.next(tape.from_seed(42), 0)
+    test.assert(z == 0)
+    test.assert(list.len(tape.choices_of(t3)) == 1)
+
+@test
+fn test_a_transcript_replays_exactly() [io]
+    test.case("the recorded values come back in order")
+    let (a, t1) = tape.next(tape.replay_of([3, 1, 4]), 10)
+    test.assert(a == 3)
+    let (b, _) = tape.next(t1, 10)
+    test.assert(b == 1)
+
+    test.case("and the replay reports what is left")
+    test.assert(tape.remaining(tape.replay_of([3, 1, 4])) == 3)
+    test.assert(tape.remaining(t1) == 2)
+
+    test.case("a replay carries no seed of its own, because a transcript is not a seed")
+    test.assert(tape.seed_of(tape.replay_of([3, 1, 4])) == 0)
+
+    test.case("unless it was told one")
+    test.assert(tape.seed_of(tape.replay_from(42, [3, 1, 4])) == 42)
+
+@test
+fn test_a_sealed_tape_overruns_rather_than_inventing() [io]
+    test.case("an empty transcript overruns on the first draw")
+    let (v, t) = tape.next(tape.replay_of([]), 10)
+    test.assert(v == 0)
+    test.assert(tape.is_overrun(t))
+
+    test.case("and every later draw is zero too")
+    let (v2, t2) = tape.next(t, 10)
+    test.assert(v2 == 0)
+    test.assert(tape.is_overrun(t2))
+
+    test.case("a tape that has not been over-read is not overrun")
+    test.assert(tape.is_overrun(tape.replay_of([])) == false)
+
+@test
+fn test_a_small_draw_prefers_small_values() [io]
+    // A distribution cannot be pinned by one draw, so what this case
+    // asserts is the CONTRACT: the value is in range, and a range of
+    // one gives that one.  The bias itself is the implementation
+    // lane's to demonstrate with a histogram.
+    test.case("in range")
+    let (n, _) = tape.next_small(tape.from_seed(42), 0, 32)
+    test.assert(n >= 0)
+    test.assert(n <= 32)
+
+    test.case("a range of one value gives that value")
+    let (m, _) = tape.next_small(tape.from_seed(42), 5, 5)
+    test.assert(m == 5)
+
+@test
+fn test_the_prng_step_is_the_compatibility_surface() [io]
+    test.case("it is a function of the state alone")
+    let (v1, s1) = tape.split_step(42)
+    let (v2, s2) = tape.split_step(42)
+    test.assert(v1 == v2)
+    test.assert(s1 == s2)
+
+    test.case("and it advances")
+    test.assert(s1 != 42)
+
+@test
+fn test_a_property_has_three_answers_and_not_two() [io]
+    test.case("the names")
+    test.assert(propcheck.check_name(PropHolds) == "holds")
+    test.assert(propcheck.check_name(PropBroke("x")) == "broke")
+    test.assert(propcheck.check_name(PropSkip) == "skip")
+
+    test.case("a skipped case has NOT failed")
+    test.assert(propcheck.broke(PropSkip) == false)
+    test.assert(propcheck.broke(PropHolds) == false)
+    test.assert(propcheck.broke(PropBroke("x")))
+
+    test.case("and only a break carries a reason")
+    match propcheck.reason_of(PropBroke("empty after two reverses"))
+        Some(w) => test.assert(w == "empty after two reverses")
+        None    => test.fail("a break says what was wrong")
+    match propcheck.reason_of(PropSkip)
+        Some(_) => test.fail("a skip is not a complaint")
+        None    => test.assert(true)
+
+@test
+fn test_the_two_bridges_from_a_boolean() [io]
+    test.case("holds_if turns an assertion into an answer")
+    test.assert(propcheck.check_name(propcheck.holds_if(true, "why")) == "holds")
+    test.assert(propcheck.check_name(propcheck.holds_if(false, "why")) == "broke")
+
+    test.case("assumed turns a precondition into a skip, not a pass")
+    test.assert(propcheck.check_name(propcheck.assumed(true)) == "holds")
+    test.assert(propcheck.check_name(propcheck.assumed(false)) == "skip")
+
+    test.case("all_of takes the first answer that is not holds")
+    test.assert(propcheck.check_name(propcheck.all_of([PropHolds, PropHolds])) == "holds")
+    test.assert(propcheck.check_name(propcheck.all_of([PropHolds, PropSkip])) == "skip")
+    test.assert(propcheck.check_name(propcheck.all_of([])) == "holds")
+
+@test
+fn test_a_replay_line_round_trips() [io]
+    test.case("the text a report prints is the text a person pastes back")
+    let line = propcheck.replay_line(42, [3, 1, 4])
+    match propcheck.parse_replay_line(line)
+        Some(sc) =>
+            test.assert(sc.0 == 42)
+            test.assert(list.len(sc.1) == 3)
+        None     => test.fail("replay_line produces lines parse_replay_line accepts")
+
+    test.case("and anything else is not one")
+    match propcheck.parse_replay_line("just some text")
+        Some(_) => test.fail("that is not a replay line")
+        None    => test.assert(true)
+
+@test
+fn test_the_shrink_order_is_shorter_then_smaller() [io]
+    test.case("shorter wins")
+    test.assert(shrink.simpler_than([1], [1, 1]))
+    test.assert(shrink.simpler_than([1, 1], [1]) == false)
+
+    test.case("then lexicographically smaller, at equal length")
+    test.assert(shrink.simpler_than([0, 5], [1, 5]))
+    test.assert(shrink.simpler_than([1, 5], [0, 5]) == false)
+
+    test.case("and nothing is simpler than itself")
+    test.assert(shrink.simpler_than([1, 2], [1, 2]) == false)
+
+@test
+fn test_the_passes_are_a_published_order() [io]
+    test.case("six of them")
+    test.assert(list.len(shrink.passes()) == 6)
+
+    test.case("deleting comes first, because it makes every later pass cheaper")
+    test.assert(shrink.pass_name(shrink.passes()[0]) == "delete span")
+
+    test.case("and each has a stable name")
+    test.assert(shrink.pass_name(PassZeroChoice) == "zero choice")
+    test.assert(shrink.pass_name(PassHalveChoice) == "halve choice")
+    test.assert(shrink.pass_name(PassLowerChoice) == "lower choice")
+    test.assert(shrink.pass_name(PassSortSpan) == "sort span")
+    test.assert(shrink.pass_name(PassDedupeSpan) == "dedupe span")
+
+@test
+fn test_a_walk_over_an_empty_transcript_has_nothing_to_do() [io]
+    test.case("done at once")
+    let p = shrink.plan_from([])
+    test.assert(shrink.is_done(p))
+    test.assert(list.len(shrink.best_of(p)) == 0)
+
+    test.case("and offers no candidate")
+    match shrink.next_try(p)
+        Some(_) => test.fail("there is nothing to reduce")
+        None    => test.assert(true)
+
+@test
+fn test_the_runner_drives_the_walk_and_the_plan_waits() [io]
+    let p = shrink.plan_from([5, 5, 5])
+
+    test.case("a fresh plan has accepted nothing")
+    test.assert(shrink.shrinks_of(p) == 0)
+    test.assert(shrink.is_done(p) == false)
+
+    test.case("asking twice without answering gives the same candidate")
+    match shrink.next_try(p)
+        Some(a) =>
+            match shrink.next_try(p)
+                Some(b) => test.assert(a.at == b.at)
+                None    => test.fail("the plan does not advance until it is told")
+        None    => test.fail("a three-choice transcript has reductions to try")
+
+    test.case("keeping a candidate counts a shrink and takes its transcript")
+    match shrink.next_try(p)
+        Some(t) =>
+            let kept = shrink.keep(p, t)
+            test.assert(shrink.shrinks_of(kept) == 1)
+            test.assert(shrink.simpler_than(shrink.best_of(kept), [5, 5, 5]))
+        None    => test.fail("a three-choice transcript has reductions to try")
+
+    test.case("rejecting one counts a try and leaves the best alone")
+    match shrink.next_try(p)
+        Some(t) =>
+            let dropped = shrink.reject(p, t)
+            test.assert(shrink.shrinks_of(dropped) == 0)
+            test.assert(shrink.tried_of(dropped) > shrink.tried_of(p))
+            test.assert(list.len(shrink.best_of(dropped)) == 3)
+        None    => test.fail("a three-choice transcript has reductions to try")
+
+@test
+fn test_a_candidate_names_the_pass_that_made_it() [io]
+    test.case("so a report can say which reduction did the work")
+    match shrink.next_try(shrink.plan_from([5, 5, 5]))
+        Some(t) =>
+            test.assert(shrink.pass_name(t.by_pass) == "delete span")
+            test.assert(t.at >= 0)
+            test.assert(list.len(t.candidate) < 3)
+        None    => test.fail("a three-choice transcript has reductions to try")

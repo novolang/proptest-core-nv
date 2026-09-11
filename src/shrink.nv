@@ -1,0 +1,295 @@
+// shrink.nv — shrinking as arithmetic on the choice sequence, as a
+// walk the runner drives.
+//
+// WHICH MODEL THIS PORTS, AND WHY.  Two are on offer:
+//
+//   proptest's INTEGRATED shrinking.  A strategy produces a
+//   `ValueTree` with `current`, `simplify` and `complicate`; the
+//   candidates are the value's own, and the shrinker walks the tree.
+//
+//   hypothesis's INTERNAL shrinking.  A generation is a function of a
+//   choice sequence; the candidates are SHORTER OR LEXICOGRAPHICALLY
+//   SMALLER choice sequences, replayed through the same strategy.
+//
+// **This package ports hypothesis's**, for four reasons, and the first
+// two are about this language rather than about taste:
+//
+//   1. A `ValueTree` needs one named type per combinator and an
+//      existential to hold a heterogeneous list of them.  A trait bound
+//      here cannot carry a type argument (SPEC § 3.6's grammar), so
+//      `map`, `one_of` and `flat_map` could not return a strategy at
+//      all; and `dyn Trait` is charged the union of every impl in the
+//      program (SPEC § 5.6), which a `core` package's empty budget
+//      cannot pay.
+//   2. `simplify` and `complicate` are mutation on the tree.
+//      `[mutate]` is a host effect.  A pass here is a function from
+//      `[Int]` to `[Int]`.
+//   3. One walk shrinks EVERY strategy, `flat_map` included — where a
+//      later draw depends on an earlier one, which is exactly where
+//      integrated shrinking is weakest, because the tree for the
+//      second draw was built for a value the first no longer has.
+//   4. Reproduction is one integer and one list.  A failure report
+//      carries them and they replay with no property, no generator and
+//      no machine.
+//
+// THE COST, STATED.  A shrink is minimal in the CHOICE SEQUENCE, not
+// necessarily in the value.  It works because every generator here
+// maps a smaller choice to a simpler value; a `map` that inverts that
+// order defeats it, and `strategy.map`'s own comment says so.
+// hypothesis has the same cost and documents it the same way.
+//
+// THE RUNNER DRIVES THE WALK.  Nothing here calls a property, because
+// calling one would cost whatever the property costs — and a `core`
+// package cannot pay that.  The shape is a state machine:
+//
+//     let mut p = shrink.plan_from(failing_choices)
+//     loop
+//         match shrink.next_try(p)
+//             None      => break
+//             Some(try) =>
+//                 // the RUNNER replays `try.candidate` and judges it
+//                 p = if still_fails then shrink.keep(p, try) else shrink.reject(p, try)
+//
+// which is the same "the core asks, the host performs" shape the
+// publishing guide names for a `core` package that needs something
+// done.
+
+// A named reduction, tried against the transcript in this order.
+//
+// The order is hypothesis's and it is not arbitrary: deleting comes
+// first because removing a span makes every later pass cheaper, and
+// the two lowering passes come last because they are the ones that
+// make progress in single steps.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     println(shrink.pass_name(PassDeleteSpan))
+// ```
+pub enum ShrinkPass
+    // Remove a run of choices.  Shortens a list, empties a string,
+    // takes a `Some` to a `None`.  Spans are tried longest first, so
+    // the biggest reduction that works is the one taken.
+    PassDeleteSpan
+    // Set one choice to 0.  Takes an integer to its range's low end, a
+    // boolean to false, a branch to the first one.
+    PassZeroChoice
+    // Halve one choice.  Gets a large number small in a logarithmic
+    // number of steps, where zeroing would either work at once or not
+    // at all.
+    PassHalveChoice
+    // Lower one choice by binary search between 0 and its value.
+    // Finds the exact boundary a property breaks at, which is the
+    // number a person actually wants to see.
+    PassLowerChoice
+    // Sort a run of choices ascending.  A list whose failure does not
+    // depend on order becomes a sorted list, which is easier to read
+    // and easier for the later passes to shorten.
+    PassSortSpan
+    // Replace a run with an earlier run of the same length.  Makes
+    // repeated structure identical — three different names in a list
+    // become the same name three times — which is usually the
+    // clearest form of a counterexample about duplicates.
+    PassDedupeSpan
+
+// The state of a shrink walk.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     println("${shrink.is_done(shrink.plan_from([]))}")
+// ```
+pub struct ShrinkPlan
+    // The shortest, smallest transcript known to still fail.  Starts
+    // as the one the failing case produced and only ever improves.
+    best: [Int]
+    // Which pass is being tried, as an index into `passes()`.
+    at_pass: Int
+    // Where in the transcript this pass is.
+    index: Int
+    // How many candidates have been accepted.
+    shrinks: Int
+    // How many candidates have been offered.  The runner's budget is
+    // measured against this, so a walk that stops making progress
+    // stops costing time.
+    tried: Int
+    // Whether every pass has run to the end with nothing accepted.
+    done: Bool
+
+// One candidate for the runner to judge.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     match shrink.next_try(shrink.plan_from([5, 5]))
+//         Some(t) => println(shrink.pass_name(t.by_pass))
+//         None    => println("nothing left to try")
+// ```
+pub struct ShrinkTry
+    // The transcript to replay.
+    candidate: [Int]
+    // Which pass produced it, so a runner can report — or trace —
+    // which reduction did the work.
+    by_pass: ShrinkPass
+    // Where in the transcript it applied.
+    at: Int
+
+// The passes, in the order they are tried.
+//
+// `pub` because the order is part of the contract: a caller
+// reproducing a shrink by hand, or writing a test about one, needs the
+// same sequence.
+//
+// ```novo
+// use shrink
+// use std.list
+//
+// fn main() [io]
+//     println("${list.len(shrink.passes())}")
+// ```
+pub fn passes() -> [ShrinkPass]
+    todo("proptest-core-nv.shrink.passes")
+
+// A pass's name: `"delete span"`, `"zero choice"`, `"halve choice"`,
+// `"lower choice"`, `"sort span"`, `"dedupe span"`.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     println(shrink.pass_name(PassHalveChoice))
+// ```
+pub fn pass_name(p: ShrinkPass) -> Str
+    todo("proptest-core-nv.shrink.pass_name")
+
+// A walk over a failing transcript.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     println("${shrink.shrinks_of(shrink.plan_from([5, 5, 5]))}")
+// ```
+pub fn plan_from(failing: [Int]) -> ShrinkPlan
+    todo("proptest-core-nv.shrink.plan_from")
+
+// **The next candidate, or `None` when the walk is finished.**
+//
+// The runner replays the candidate and answers with `keep` or
+// `reject`.  Calling this twice without answering gives the same
+// candidate both times — the plan does not advance until it is told
+// what happened, which is what makes the walk resumable and testable.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     match shrink.next_try(shrink.plan_from([5]))
+//         Some(t) => println("${t.at}")
+//         None    => println("already minimal")
+// ```
+pub fn next_try(p: ShrinkPlan) -> ?ShrinkTry
+    todo("proptest-core-nv.shrink.next_try")
+
+// The candidate still failed: take it, and carry on from there.
+//
+// The pass is retried at the same position, because a reduction that
+// worked once often works again — a list that shrank from eight to
+// four shrinks from four to two.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     match shrink.next_try(shrink.plan_from([5]))
+//         Some(t) => println("${shrink.shrinks_of(shrink.keep(shrink.plan_from([5]), t))}")
+//         None    => println("already minimal")
+// ```
+pub fn keep(p: ShrinkPlan, t: ShrinkTry) -> ShrinkPlan
+    todo("proptest-core-nv.shrink.keep")
+
+// The candidate passed, or was discarded: move on.
+//
+// A candidate that OVERRAN is rejected the same way, which is the
+// point of `tape.is_overrun`: a transcript too short for the strategy
+// produces a value made of zeros, and a property that fails on that
+// has not failed on anything the strategy can generate.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     match shrink.next_try(shrink.plan_from([5]))
+//         Some(t) => println("${shrink.is_done(shrink.reject(shrink.plan_from([5]), t))}")
+//         None    => println("already minimal")
+// ```
+pub fn reject(p: ShrinkPlan, t: ShrinkTry) -> ShrinkPlan
+    todo("proptest-core-nv.shrink.reject")
+
+// The best transcript found.
+//
+// ```novo
+// use shrink
+// use std.list
+//
+// fn main() [io]
+//     println("${list.len(shrink.best_of(shrink.plan_from([5, 5])))}")
+// ```
+pub fn best_of(p: ShrinkPlan) -> [Int]
+    todo("proptest-core-nv.shrink.best_of")
+
+// How many candidates have been accepted.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     println("${shrink.shrinks_of(shrink.plan_from([5]))}")
+// ```
+pub fn shrinks_of(p: ShrinkPlan) -> Int
+    todo("proptest-core-nv.shrink.shrinks_of")
+
+// How many candidates have been offered.
+//
+// What a runner's budget is measured against.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     println("${shrink.tried_of(shrink.plan_from([5]))}")
+// ```
+pub fn tried_of(p: ShrinkPlan) -> Int
+    todo("proptest-core-nv.shrink.tried_of")
+
+// Whether every pass has run with nothing accepted.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     println("${shrink.is_done(shrink.plan_from([]))}")
+// ```
+pub fn is_done(p: ShrinkPlan) -> Bool
+    todo("proptest-core-nv.shrink.is_done")
+
+// Whether one transcript is simpler than another under the order this
+// walk minimises.
+//
+// **Shorter first, then lexicographically smaller.**  The whole
+// ordering in one function, `pub` so that a test can assert a shrink
+// made progress without reimplementing the comparison, and so that a
+// reader who wants to know what "minimal" means here can read it
+// rather than infer it from six passes.
+//
+// ```novo
+// use shrink
+//
+// fn main() [io]
+//     println("${shrink.simpler_than([1], [1, 1])}")
+// ```
+pub fn simpler_than(a: [Int], b: [Int]) -> Bool
+    todo("proptest-core-nv.shrink.simpler_than")

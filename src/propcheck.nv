@@ -1,0 +1,210 @@
+// propcheck.nv — what a property answers, and what a failure is.
+//
+// A PROPERTY ANSWERS WITH A VALUE, not by panicking and not by
+// printing.  Three answers, because two is not enough:
+//
+//   PropHolds        the property held for this case
+//   PropBroke(why)   it did not, and here is what was wrong
+//   PropSkip         this case did not meet the precondition
+//
+// `PropSkip` is hypothesis's `assume` and QuickCheck's `==>`.  Without
+// it a precondition has to be an `if` that returns "held", and a
+// property that skips nine cases in ten looks like a property that
+// passed a thousand times.  The runner counts skips separately and
+// gives up on a strategy that skips too many, which is the diagnosis a
+// person needs — "your generator does not produce the values your
+// property is about".
+//
+// `why` IS A STRING and that is a deliberate limit.  It is the one
+// place text appears in this package, and it is the property author's
+// own words about their own assertion — not this package deciding how
+// a failure reads.  A structured reason would have to be generic over
+// the caller's error type, and every caller would then need a
+// conversion for a field only a report ever looks at.
+//
+// **NOTHING HERE PRINTS.**  A `PropFailure` is a value with fields; a
+// runner renders it, and `proptest-nv` is where a rendering exists.
+
+// What a property says about one case.
+//
+// ```novo
+// use propcheck
+//
+// fn main() [io]
+//     println(propcheck.check_name(PropHolds))
+// ```
+pub enum PropCheck
+    // The property held.
+    PropHolds
+    // It did not.  `why` is the author's own words.
+    PropBroke(why: Str)
+    // The case did not meet the property's precondition and proves
+    // nothing either way.
+    PropSkip
+
+// A failing case, minimised, as a value.
+//
+// Generic over the value's type so a caller gets their own value back
+// rather than a rendering of it — which is what lets a test re-run the
+// exact case in a debugger.
+//
+// ```novo
+// use propcheck
+//
+// fn describe(f: PropFailure<Int>) -> Str
+//     f.why
+// ```
+pub struct PropFailure<T>
+    // The seed the run started from.  One integer, and it reproduces
+    // the whole run — the generation, the failure and the shrink.
+    seed: Int
+    // The transcript that produces `value`, after shrinking.  Replay
+    // it with `tape.replay_of` to get the value back without the
+    // seed, which is what a persisted failure file stores.
+    choices: [Int]
+    // The minimal value the property failed on.
+    value: T
+    // What the property said was wrong with it.
+    why: Str
+    // How many cases ran before this one failed.
+    cases: Int
+    // How many shrink candidates were accepted on the way to
+    // `value` — 0 when the first failing case was already minimal.
+    shrinks: Int
+
+// The name of an answer: `"holds"`, `"broke"`, `"skip"`.
+//
+// ```novo
+// use propcheck
+//
+// fn main() [io]
+//     println(propcheck.check_name(PropSkip))
+// ```
+pub fn check_name(c: PropCheck) -> Str
+    todo("proptest-core-nv.propcheck.check_name")
+
+// Whether an answer is a failure.
+//
+// `PropSkip` is false: a skipped case has not failed, and a runner
+// that treated it as one would report a bug in a property that never
+// ran.
+//
+// ```novo
+// use propcheck
+//
+// fn main() [io]
+//     println("${propcheck.broke(PropSkip)}")
+// ```
+pub fn broke(c: PropCheck) -> Bool
+    todo("proptest-core-nv.propcheck.broke")
+
+// The reason inside a `PropBroke`, or `None`.
+//
+// ```novo
+// use propcheck
+//
+// fn main() [io]
+//     match propcheck.reason_of(PropBroke("empty after two reverses"))
+//         Some(w) => println(w)
+//         None    => println("nothing was wrong")
+// ```
+pub fn reason_of(c: PropCheck) -> ?Str
+    todo("proptest-core-nv.propcheck.reason_of")
+
+// `PropHolds` when true, `PropBroke(why)` when false.
+//
+// The bridge from an ordinary boolean assertion, which is what most
+// properties are: `propcheck.holds_if(reverse(reverse(xs)) == xs, "not
+// an involution")`.
+//
+// ```novo
+// use propcheck
+//
+// fn main() [io]
+//     println(propcheck.check_name(propcheck.holds_if(1 == 1, "one is one")))
+// ```
+pub fn holds_if(cond: Bool, why: Str) -> PropCheck
+    todo("proptest-core-nv.propcheck.holds_if")
+
+// `PropHolds` when the precondition is met, `PropSkip` when it is not.
+//
+// `assume`, under a name that says which way round it goes. A
+// property that starts `if propcheck.broke(assume(n != 0))` reads
+// wrong; `assumed(n != 0)` returning `PropSkip` and the property
+// returning it straight through reads right.
+//
+// ```novo
+// use propcheck
+//
+// fn main() [io]
+//     println(propcheck.check_name(propcheck.assumed(false)))
+// ```
+pub fn assumed(cond: Bool) -> PropCheck
+    todo("proptest-core-nv.propcheck.assumed")
+
+// The first answer that is not `PropHolds`, or `PropHolds`.
+//
+// For a property with several assertions in it, so that the first one
+// to break is the one reported and the later ones do not run against a
+// value that is already wrong.
+//
+// ```novo
+// use propcheck
+//
+// fn main() [io]
+//     println(propcheck.check_name(propcheck.all_of([PropHolds, PropSkip])))
+// ```
+pub fn all_of(cs: [PropCheck]) -> PropCheck
+    todo("proptest-core-nv.propcheck.all_of")
+
+// A failure, assembled.
+//
+// The constructor a runner uses when a shrink walk has finished.
+//
+// ```novo
+// use propcheck
+//
+// fn main() [io]
+//     let f = propcheck.failure(42, [3, 1], 7, "seven is not even", 12, 4)
+//     println("${f.seed}")
+// ```
+pub fn failure<T>(seed: Int, choices: [Int], value: T, why: Str, cases: Int,
+                  shrinks: Int) -> PropFailure<T>
+    todo("proptest-core-nv.propcheck.failure")
+
+// The line that reproduces a failure, as text.
+//
+// The one rendering in this package, and it renders the SEED and the
+// TRANSCRIPT — never the value, which is generic and has no
+// universal spelling. It is here rather than in the runner because it
+// is the contract between them: the string a report prints and the
+// string a person pastes back into a test are the same string, and one
+// function is how they stay that way.
+//
+// **It returns the text; it does not print it.**
+//
+// ```novo
+// use propcheck
+//
+// fn main() [io]
+//     println(propcheck.replay_line(42, [3, 1, 4]))
+// ```
+pub fn replay_line(seed: Int, choices: [Int]) -> Str
+    todo("proptest-core-nv.propcheck.replay_line")
+
+// The seed and transcript back out of a line `replay_line` produced.
+//
+// `None` when the text is not one. The inverse exists so that a
+// persisted failure file, or a line a person pasted from a build log,
+// is a value again with no second parser to keep in step.
+//
+// ```novo
+// use propcheck
+//
+// fn main() [io]
+//     match propcheck.parse_replay_line("seed 42 choices 3,1,4")
+//         Some((s, _)) => println("${s}")
+//         None         => println("not a replay line")
+// ```
+pub fn parse_replay_line(text: Str) -> ?(Int, [Int])
+    todo("proptest-core-nv.propcheck.parse_replay_line")

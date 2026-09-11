@@ -1,0 +1,427 @@
+// strategy.nv — a strategy, and the combinators that build one.
+//
+// A STRATEGY IS A FUNCTION, HELD IN A STRUCT:
+//
+//     pub struct PropStrategy<T>
+//         draw: fn(Tape) -> (T, Tape)
+//
+// and every combinator is a function that returns one.  That is the
+// shape, and it is not the shape proptest has, so it is worth saying
+// why.
+//
+// WHY NOT A TRAIT.  proptest's `Strategy` is a trait whose `new_tree`
+// returns a `ValueTree`, and every combinator has its own named tree
+// type — `Map`, `Filter`, `VecStrategy` — selected by generic
+// unification.  Two things in this language stop that:
+//
+//   1. **A trait bound cannot carry a type argument.**  SPEC § 3.6's
+//      grammar is `trait_bound ::= TYPE_IDENT [ '[' ident ']' ]`: the
+//      optional bracket is the EFFECT argument.  So
+//      `fn map<A, B, S: Draws<A>>(...)` is a parse error, and a
+//      combinator generic over the value type cannot be written
+//      against a trait at all.
+//   2. **`dyn Trait` costs the union of every impl in the program**
+//      (SPEC § 5.6's table).  A `core` package whose budget is `[]`
+//      cannot hold a trait object, because one effectful impl of that
+//      trait ANYWHERE in the assembly puts an effect on it.
+//
+// A closure in a struct field has neither problem: `PropStrategy<[T]>`
+// is an ordinary type, `one_of` takes a plain list of them, and the
+// row stays empty because a `fn(Tape) -> (T, Tape)` declares none.
+//
+// A STRATEGY DOES NOT SHRINK.  There is no `simplify` here and no
+// value tree.  A generated value's simplifications are the
+// simplifications of the CHOICE SEQUENCE that produced it, and
+// `shrink` walks those — see that module's header for which model this
+// ports and why.  Everything a strategy needs to do for shrinking to
+// work is a property of how it draws, and there is exactly one rule:
+//
+//   **A SMALLER CHOICE MUST MEAN A SIMPLER VALUE.**
+//
+// Every generator below obeys it — `int_range` maps choice 0 to `lo`,
+// `list_of` draws the length before the elements, `one_of` puts the
+// simplest branch first — and a `map` that inverts the order is the
+// one way a caller can defeat the shrinker.  That is stated on `map`.
+
+// A rule for producing a value from a tape.
+//
+// ```novo
+// use strategy
+//
+// fn ints() -> PropStrategy<Int>
+//     strategy.int_range(0, 100)
+// ```
+pub struct PropStrategy<T>
+    // Take a tape, give a value and the tape that follows.  Total: a
+    // strategy never fails, because a tape never refuses — it
+    // overruns, and the runner is what notices.
+    draw: fn(Tape) -> (T, Tape)
+
+// The byte classes a string strategy draws from.
+//
+// ```novo
+// use strategy
+//
+// fn names() -> PropStrategy<Str>
+//     strategy.str_of(ClassAlnum, 1, 16)
+// ```
+pub enum ByteClass
+    // `a`–`z`, `A`–`Z`.
+    ClassAlpha
+    // `a`–`z`, `A`–`Z`, `0`–`9`.
+    ClassAlnum
+    // `0`–`9`.
+    ClassDigit
+    // 0x20–0x7E: everything a terminal shows without an escape.
+    ClassPrintable
+    // 0x00–0x7F, control characters included.  The class that finds
+    // the bug where a NUL ends a string early.
+    ClassAscii
+    // Every byte, 0x00–0xFF.  Strings here are byte strings, so this
+    // produces values that are not valid UTF-8 — deliberately, because
+    // that is what a parser has to survive.
+    ClassAnyByte
+    // Exactly the bytes of this string, sampled with repetition.  For
+    // an alphabet a format defines: `ClassOneOf("0123456789abcdef")`.
+    ClassOneOf(allowed: Str)
+
+// Run a strategy against a tape.
+//
+// The one call that turns a strategy into a value.  Everything else in
+// this module builds strategies; this is what the runner does with
+// one, and it is `pub` so a caller can drive a generation without a
+// runner at all.
+//
+// ```novo
+// use strategy
+// use tape
+//
+// fn main() [io]
+//     let (n, _) = strategy.draw_with(strategy.int_range(0, 10), tape.from_seed(42))
+//     println("${n >= 0}")
+// ```
+pub fn draw_with<T>(g: PropStrategy<T>, t: Tape) -> (T, Tape)
+    todo("proptest-core-nv.strategy.draw_with")
+
+// A strategy from a drawing function.
+//
+// The escape hatch: a caller with a generator this package does not
+// offer wraps it here and it composes with everything else.
+//
+// ```novo
+// use strategy
+// use tape
+//
+// fn always_seven() -> PropStrategy<Int>
+//     strategy.from_draw(t => (7, t))
+// ```
+pub fn from_draw<T>(f: fn(Tape) -> (T, Tape)) -> PropStrategy<T>
+    todo("proptest-core-nv.strategy.from_draw")
+
+// One value, always, consuming no choice.
+//
+// The identity of the combinators and the base of every recursive
+// strategy.  It draws nothing, so it adds nothing to the transcript
+// and costs a shrink pass nothing to consider.
+//
+// ```novo
+// use strategy
+//
+// fn zero() -> PropStrategy<Int>
+//     strategy.just(0)
+// ```
+pub fn just<T>(v: T) -> PropStrategy<T>
+    todo("proptest-core-nv.strategy.just")
+
+// An integer in `[lo, hi]`, inclusive at both ends.
+//
+// **Choice 0 is `lo`**, which is the shrinking rule: a smaller choice
+// is a smaller integer, so the shrinker's "lower this number" pass
+// walks the value towards `lo` without knowing anything about
+// integers.
+//
+// `lo > hi` gives `lo` and consumes a choice anyway, so a caller who
+// computed an empty range gets a value rather than a panic — and the
+// transcript keeps its shape.
+//
+// ```novo
+// use strategy
+//
+// fn small() -> PropStrategy<Int>
+//     strategy.int_range(0, 100)
+// ```
+pub fn int_range(lo: Int, hi: Int) -> PropStrategy<Int>
+    todo("proptest-core-nv.strategy.int_range")
+
+// Any 64-bit integer, biased towards the values that break things.
+//
+// 0, 1, -1, the two extremes and the powers of two near them are drawn
+// far more often than a uniform draw would give them, because those
+// are where the bugs are. Uniform over the whole range is
+// `int_range(min, max)` and is available when that is what is wanted.
+//
+// ```novo
+// use strategy
+//
+// fn anything() -> PropStrategy<Int>
+//     strategy.int_any()
+// ```
+pub fn int_any() -> PropStrategy<Int>
+    todo("proptest-core-nv.strategy.int_any")
+
+// A float in `[lo, hi)`.
+//
+// Finite only: no NaN and no infinity, because a property that has to
+// hold for NaN is a different property and a caller should ask for it.
+// `float_special` is where those live.
+//
+// ```novo
+// use strategy
+//
+// fn unit() -> PropStrategy<Float>
+//     strategy.float_range(0.0, 1.0)
+// ```
+pub fn float_range(lo: Float, hi: Float) -> PropStrategy<Float>
+    todo("proptest-core-nv.strategy.float_range")
+
+// The float values that break arithmetic: 0.0, -0.0, 1.0, -1.0, the
+// smallest subnormal, the largest finite, both infinities and NaN.
+//
+// Separate from `float_range` so that a caller opts in, and a
+// distinct strategy rather than a flag so a signature says which one a
+// test used.
+//
+// ```novo
+// use strategy
+//
+// fn nasty() -> PropStrategy<Float>
+//     strategy.float_special()
+// ```
+pub fn float_special() -> PropStrategy<Float>
+    todo("proptest-core-nv.strategy.float_special")
+
+// `true` or `false`.
+//
+// **Choice 0 is `false`**, so the shrinker walks a boolean towards
+// false — which is what makes a minimal counterexample turn its
+// optional features off.
+//
+// ```novo
+// use strategy
+//
+// fn flag() -> PropStrategy<Bool>
+//     strategy.bool_any()
+// ```
+pub fn bool_any() -> PropStrategy<Bool>
+    todo("proptest-core-nv.strategy.bool_any")
+
+// A string of `lo` to `hi` bytes from a class.
+//
+// The length is drawn first, with `tape.next_small`, so short strings
+// are common and the shrinker's delete-a-span pass has something to
+// bite on. Each byte is one choice, and choice 0 is the first byte of
+// the class — so shrinking a `ClassAlnum` string walks it towards
+// `"aaa"` and then towards `""`.
+//
+// ```novo
+// use strategy
+//
+// fn names() -> PropStrategy<Str>
+//     strategy.str_of(ClassAlnum, 0, 32)
+// ```
+pub fn str_of(class: ByteClass, lo: Int, hi: Int) -> PropStrategy<Str>
+    todo("proptest-core-nv.strategy.str_of")
+
+// A list of `lo` to `hi` values.
+//
+// The length is drawn first, with `tape.next_small`, and then the
+// elements — which is the ordering that makes the shrinker's
+// delete-a-span pass work: deleting the elements' choices from the
+// transcript and lowering the length choice both make the list
+// shorter, and the shrinker tries both.
+//
+// ```novo
+// use strategy
+//
+// fn lists() -> PropStrategy<[Int]>
+//     strategy.list_of(strategy.int_range(0, 10), 0, 16)
+// ```
+pub fn list_of<T>(g: PropStrategy<T>, lo: Int, hi: Int) -> PropStrategy<[T]>
+    todo("proptest-core-nv.strategy.list_of")
+
+// `Some(v)` or `None`.
+//
+// **Choice 0 is `None`**, so a minimal counterexample is the one with
+// the optional field absent.
+//
+// ```novo
+// use strategy
+//
+// fn maybe() -> PropStrategy<?Int>
+//     strategy.option_of(strategy.int_range(0, 10))
+// ```
+pub fn option_of<T>(g: PropStrategy<T>) -> PropStrategy<?T>
+    todo("proptest-core-nv.strategy.option_of")
+
+// Two values, drawn left to right.
+//
+// The order matters for shrinking: the left one's choices come first
+// in the transcript, so a lexicographic shrink simplifies the left
+// element before the right one, and a minimal pair is minimal from the
+// left.
+//
+// ```novo
+// use strategy
+//
+// fn pairs() -> PropStrategy<(Int, Bool)>
+//     strategy.pair_of(strategy.int_range(0, 10), strategy.bool_any())
+// ```
+pub fn pair_of<A, B>(a: PropStrategy<A>, b: PropStrategy<B>) -> PropStrategy<(A, B)>
+    todo("proptest-core-nv.strategy.pair_of")
+
+// Three values, drawn left to right.
+//
+// ```novo
+// use strategy
+//
+// fn triples() -> PropStrategy<(Int, Int, Bool)>
+//     strategy.triple_of(strategy.int_range(0, 10), strategy.int_range(0, 10),
+//                        strategy.bool_any())
+// ```
+pub fn triple_of<A, B, C>(a: PropStrategy<A>, b: PropStrategy<B>,
+                          c: PropStrategy<C>) -> PropStrategy<(A, B, C)>
+    todo("proptest-core-nv.strategy.triple_of")
+
+// Four values, drawn left to right.
+//
+// The last of the tuple combinators.  Beyond four, a caller has a
+// record rather than a tuple and should `map` a struct out of two
+// pairs — which reads better in the failure report too, because a
+// field has a name and a tuple slot does not.
+//
+// ```novo
+// use strategy
+//
+// fn quads() -> PropStrategy<(Int, Int, Int, Int)>
+//     strategy.quad_of(strategy.int_range(0, 9), strategy.int_range(0, 9),
+//                      strategy.int_range(0, 9), strategy.int_range(0, 9))
+// ```
+pub fn quad_of<A, B, C, D>(a: PropStrategy<A>, b: PropStrategy<B>, c: PropStrategy<C>,
+                           d: PropStrategy<D>) -> PropStrategy<(A, B, C, D)>
+    todo("proptest-core-nv.strategy.quad_of")
+
+// One of several strategies, uniformly.
+//
+// The branch is one choice, drawn FIRST, so the shrinker's "lower this
+// number" pass walks a value towards the earlier branches. **Put the
+// simplest case first** — that is the whole contract, and it is what
+// makes a shrunk recursive value bottom out.
+//
+// An empty list is a programming error and gives `just` of whatever
+// the type's zero is; a caller who might have an empty list checks it.
+//
+// ```novo
+// use strategy
+//
+// fn small_or_large() -> PropStrategy<Int>
+//     strategy.one_of([strategy.int_range(0, 9), strategy.int_range(1000, 9999)])
+// ```
+pub fn one_of<T>(gs: [PropStrategy<T>]) -> PropStrategy<T>
+    todo("proptest-core-nv.strategy.one_of")
+
+// One of several strategies, by weight.
+//
+// The same branch-choice-first rule, with the weights deciding how
+// often each is taken.  A weight of 0 or less is never taken; if every
+// weight is 0 the first is.
+//
+// ```novo
+// use strategy
+//
+// fn mostly_small() -> PropStrategy<Int>
+//     strategy.weighted_of([(9, strategy.int_range(0, 9)),
+//                           (1, strategy.int_range(1000, 9999))])
+// ```
+pub fn weighted_of<T>(gs: [(Int, PropStrategy<T>)]) -> PropStrategy<T>
+    todo("proptest-core-nv.strategy.weighted_of")
+
+// A value from another strategy, transformed.
+//
+// **`f` must not invert the order.** The shrinker works on choices,
+// and it assumes a smaller choice produces a simpler value; a `map`
+// that computes `100 - n` from an `int_range(0, 100)` makes the
+// shrinker walk the value towards 100. That is not an error and
+// nothing can detect it — the cost is a counterexample that is
+// minimal in the choice sequence and not in the value, which is the
+// one place this shrinking model is weaker than an integrated one.
+// `map` with a monotone function, or use `flat_map` and pick the shape
+// before the size.
+//
+// ```novo
+// use strategy
+//
+// fn evens() -> PropStrategy<Int>
+//     strategy.map(strategy.int_range(0, 50), n => n * 2)
+// ```
+pub fn map<A, B>(g: PropStrategy<A>, f: fn(A) -> B) -> PropStrategy<B>
+    todo("proptest-core-nv.strategy.map")
+
+// A value from another strategy, retried until it satisfies a
+// predicate.
+//
+// `tries` attempts, and then the last value is taken anyway with the
+// tape marked overrun — so a filter that never passes ends as a
+// DISCARDED case rather than a hang or a lie. That is hypothesis's
+// `assume` semantics, and the runner counts the discards and gives up
+// on a strategy that discards too many.
+//
+// A filter is the last resort: it wastes draws, it lengthens the
+// transcript and it makes shrinking harder, because a shrink candidate
+// that fails the predicate is a candidate wasted. Prefer `map` onto
+// the values you want, or `flat_map` to choose a shape that cannot be
+// wrong.
+//
+// ```novo
+// use strategy
+//
+// fn non_zero() -> PropStrategy<Int>
+//     strategy.filter(strategy.int_range(0 - 10, 10), n => n != 0, 20)
+// ```
+pub fn filter<A>(g: PropStrategy<A>, keep: fn(A) -> Bool, tries: Int) -> PropStrategy<A>
+    todo("proptest-core-nv.strategy.filter")
+
+// A strategy chosen by the value another one produced.
+//
+// The dependent draw: a length, and then a list of that length; a
+// tag, and then the fields that tag implies. The first strategy's
+// choices come first in the transcript, so shrinking the first value
+// re-runs the second strategy against whatever choices are left —
+// which is exactly the case an integrated shrinker handles badly and
+// this model handles for free, because the transcript is one flat list
+// and does not care which strategy read which part of it.
+//
+// ```novo
+// use strategy
+//
+// fn sized_lists() -> PropStrategy<[Int]>
+//     strategy.flat_map(strategy.int_range(0, 8),
+//                       n => strategy.list_of(strategy.int_range(0, 9), n, n))
+// ```
+pub fn flat_map<A, B>(g: PropStrategy<A>, f: fn(A) -> PropStrategy<B>) -> PropStrategy<B>
+    todo("proptest-core-nv.strategy.flat_map")
+
+// One of a fixed list of values.
+//
+// `one_of` over `just`, which is common enough to name: an enum's
+// arms, a list of known-awkward strings, the four HTTP methods a test
+// cares about. The first is the simplest, by the same rule `one_of`
+// carries.
+//
+// ```novo
+// use strategy
+//
+// fn methods() -> PropStrategy<Str>
+//     strategy.sample_of(["GET", "POST", "DELETE"])
+// ```
+pub fn sample_of<T>(vs: [T]) -> PropStrategy<T>
+    todo("proptest-core-nv.strategy.sample_of")

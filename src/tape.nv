@@ -1,0 +1,242 @@
+// tape.nv — the deterministic source every strategy draws from, and
+// the record it leaves behind.
+//
+// A TAPE IS TWO THINGS AT ONCE, and that is the whole trick:
+//
+//   a SOURCE   — `next(t, bound)` gives an integer in `[0, bound)`
+//   a RECORD   — every integer it gave is kept in `drawn`
+//
+// So a generation is a function of the tape, and the tape's `drawn`
+// list is a complete transcript of that generation.  Hand the
+// transcript back through `replay_of` and the same strategy produces
+// the same value, with no randomness in the room.  Shrinking is then
+// arithmetic on that list, and it works for every strategy at once —
+// which is the reason this package is shaped the way it is.
+//
+// WHERE THE NUMBERS COME FROM.  A `u64` seed and a splitmix64 step,
+// written here.  Three alternatives were available and this is why it
+// is not any of them:
+//
+//   `[rand]`                  a `core` package may not have it.
+//   a bound `Rand[e]`         SPEC § 3.6's grammar is
+//   effect parameter          `trait_bound ::= TYPE_IDENT [ '[' ident ']' ]`
+//                             — a bound carries an EFFECT argument and
+//                             never a TYPE argument, so a bound generic
+//                             over the value type cannot be spelled at
+//                             all.  And even where it could: an impl
+//                             the caller supplies is only reproducible
+//                             if the caller made it so, and
+//                             reproducing a failure from a printed
+//                             seed is the feature.
+//   the host fills a buffer   hypothesis's literal shape.  It works,
+//   and the core only reads   and it makes the host guess how many
+//                             integers a generation will need.  The
+//                             PRNG here removes the guess and keeps
+//                             the transcript.
+//
+// OVERRUN.  A tape built by `replay_of` is SEALED: when its list runs
+// out, it does not draw — it sets `overrun` and answers 0 to every
+// further request.  That is hypothesis's rule, and it is what makes a
+// shorter candidate transcript meaningful: the case is DISCARDED
+// rather than counted, because a value assembled from zeros is not
+// the value the shrink was proposing.
+//
+// EVERY FUNCTION HERE DECLARES NOTHING.  A tape is a value and each
+// call returns a new one; there is no mutation, so `[mutate]` — a host
+// effect — never comes up.
+
+// A seeded, recording source of choices.
+//
+// ```novo
+// use tape
+//
+// fn main() [io]
+//     println("${tape.seed_of(tape.from_seed(42))}")
+// ```
+pub struct Tape
+    // The splitmix64 state.  Starts at the seed and advances on every
+    // fresh draw.  `seed_of` gives back the ORIGINAL seed, which is
+    // the number a failure report carries.
+    state: Int
+    // The seed this tape started from, kept so a transcript can name
+    // the run it came out of.
+    seed: Int
+    // Choices to replay before the PRNG is asked.  Empty on a fresh
+    // tape.
+    replay: [Int]
+    // How far into `replay` the next draw is.
+    pos: Int
+    // Every choice this tape has produced, in order.  The transcript.
+    drawn: [Int]
+    // Whether running out of `replay` is the end.  True for a tape
+    // from `replay_of`, false for one from `from_seed`.
+    sealed: Bool
+    // Whether a sealed tape has been asked for more than it held.
+    overrun: Bool
+
+// A fresh tape from a seed.
+//
+// Unsealed: it draws as long as it is asked to, and records what it
+// drew.  This is what the runner uses to GENERATE a case.
+//
+// ```novo
+// use tape
+//
+// fn main() [io]
+//     println("${tape.is_overrun(tape.from_seed(42))}")
+// ```
+pub fn from_seed(seed: Int) -> Tape
+    todo("proptest-core-nv.tape.from_seed")
+
+// A sealed tape that replays a transcript.
+//
+// Draws nothing of its own: when the list runs out it is `overrun`.
+// This is what the runner uses to REPRODUCE a case, and what every
+// shrink candidate is played through.
+//
+// The seed it reports is 0, because a transcript is not a seed and
+// pretending otherwise would put a number in a failure report that
+// does not reproduce it.
+//
+// ```novo
+// use tape
+//
+// fn main() [io]
+//     println("${tape.remaining(tape.replay_of([3, 1, 4]))}")
+// ```
+pub fn replay_of(choices: [Int]) -> Tape
+    todo("proptest-core-nv.tape.replay_of")
+
+// A sealed tape that replays a transcript and remembers the seed it
+// came from.
+//
+// For a failure report, where both numbers matter: the seed says which
+// run it was, and the transcript is what actually reproduces it after
+// a shrink has changed it.
+//
+// ```novo
+// use tape
+//
+// fn main() [io]
+//     println("${tape.seed_of(tape.replay_from(42, [3, 1, 4]))}")
+// ```
+pub fn replay_from(seed: Int, choices: [Int]) -> Tape
+    todo("proptest-core-nv.tape.replay_from")
+
+// **The one primitive draw**: an integer in `[0, bound)`, and the
+// tape that follows it.
+//
+// `bound` of 1 or less gives 0 and still records it, because a
+// strategy that sometimes has no choice must still leave a slot in the
+// transcript — otherwise a shrink that deletes a span would change
+// which slot every later draw reads.
+//
+// A replaying tape takes the next recorded value, modulo `bound` so
+// that a transcript shortened by a shrink pass is still meaningful
+// against a strategy whose bounds have moved.
+//
+// ```novo
+// use tape
+//
+// fn main() [io]
+//     let (n, _) = tape.next(tape.from_seed(42), 100)
+//     println("${n >= 0}")
+// ```
+pub fn next(t: Tape, bound: Int) -> (Int, Tape)
+    todo("proptest-core-nv.tape.next")
+
+// A draw biased towards small values, for a size that should usually
+// be small.
+//
+// `next` is uniform, which makes a list-length draw produce long lists
+// as often as short ones and buries the small counterexample a person
+// wanted.  This picks a magnitude first and then a value inside it, so
+// 0 and 1 are common and the maximum is rare — proptest's and
+// hypothesis's size distributions both do this, and doing it here
+// rather than inside `list_of` means every size draw in the package
+// shares one rule.
+//
+// ```novo
+// use tape
+//
+// fn main() [io]
+//     let (n, _) = tape.next_small(tape.from_seed(42), 0, 32)
+//     println("${n >= 0}")
+// ```
+pub fn next_small(t: Tape, lo: Int, hi: Int) -> (Int, Tape)
+    todo("proptest-core-nv.tape.next_small")
+
+// The transcript so far.
+//
+// What a failure report carries and what the shrink walk operates on.
+//
+// ```novo
+// use tape
+// use std.list
+//
+// fn main() [io]
+//     println("${list.len(tape.choices_of(tape.from_seed(42)))}")
+// ```
+pub fn choices_of(t: Tape) -> [Int]
+    todo("proptest-core-nv.tape.choices_of")
+
+// The seed this tape started from.
+//
+// ```novo
+// use tape
+//
+// fn main() [io]
+//     println("${tape.seed_of(tape.from_seed(42))}")
+// ```
+pub fn seed_of(t: Tape) -> Int
+    todo("proptest-core-nv.tape.seed_of")
+
+// Whether a sealed tape ran out.
+//
+// **The signal that a case must be discarded rather than judged.** A
+// value assembled after an overrun is made of zeros the strategy never
+// chose, so a property that fails on it has not failed on anything.
+//
+// ```novo
+// use tape
+//
+// fn main() [io]
+//     println("${tape.is_overrun(tape.replay_of([]))}")
+// ```
+pub fn is_overrun(t: Tape) -> Bool
+    todo("proptest-core-nv.tape.is_overrun")
+
+// How many recorded choices a sealed tape has left.
+//
+// `-1` for an unsealed tape, which has no end.
+//
+// ```novo
+// use tape
+//
+// fn main() [io]
+//     println("${tape.remaining(tape.replay_of([1, 2]))}")
+// ```
+pub fn remaining(t: Tape) -> Int
+    todo("proptest-core-nv.tape.remaining")
+
+// The splitmix64 step, exposed.
+//
+// `(value, next_state)` from a state.  It is `pub` because the whole
+// reproducibility claim rests on it: a caller who wants to check that
+// this toolchain's arithmetic agrees with the reference vectors can,
+// and a caller who wants the same stream for something else does not
+// have to reimplement it.
+//
+// **This function is the compatibility surface.** Changing it changes
+// every seed's meaning, so it changes on a MINOR bump and says so in
+// the changelog.
+//
+// ```novo
+// use tape
+//
+// fn main() [io]
+//     let (v, _) = tape.split_step(42)
+//     println("${v != 0}")
+// ```
+pub fn split_step(state: Int) -> (Int, Int)
+    todo("proptest-core-nv.tape.split_step")

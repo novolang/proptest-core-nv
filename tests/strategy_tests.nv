@@ -1,0 +1,211 @@
+// strategy_tests.nv — the API suite for the strategy combinators.
+//
+// **THIS FILE DOES NOT COMPILE ON THIS TOOLCHAIN, AND THAT IS THE
+// FINDING.**  It is red at the LLVM verifier rather than at
+// `not implemented`, and it is kept as written because what it fails
+// on is a compiler defect and not a design that needs changing.
+//
+// WHAT HAPPENS.  A generic function whose signature applies a generic
+// head to its type parameter — `fn just<T>(v: T) -> PropStrategy<T>` —
+// is not emitted for a call from another module.  The narrowest form
+// is one line:
+//
+//     let g = strategy.just(7)
+//
+// and it produces
+//
+//     llvm-as: error: use of undefined value '@novo_user_strategy_just'
+//
+// with two other faces depending on how the result is used: an E6000
+// internal compiler error ("cannot resolve this call's return type")
+// when a generic function TAKES the strategy and returns the type
+// parameter, and a `ptr` stored into an `i64` slot when the result is
+// annotated so the ICE's own fallback does not fire.  A generic whose
+// signature does not apply a generic head — `fn id<T>(v: T) -> T` —
+// works from the same place.
+//
+// The same failure happens between two modules under `src/`, so this
+// is not a test-harness problem: no consumer can call these functions
+// either, and the whole `strategy` surface is unreachable until the
+// defect closes.  `novo pkg build` reports success, because a library
+// build type-checks and emits nothing.
+//
+// WHY THE PACKAGE IS NOT BEING RESHAPED AROUND IT.  The alternative is
+// a monomorphic surface — `int_strategy`, `str_strategy`,
+// `int_list_strategy`, one function per element type — which is a
+// different library and a worse one, and the interfaces-first
+// milestone exists so that a design is reviewed before it is bent.
+// `PropStrategy<T>` is the design; the defect is filed against the
+// LLVM backend and the README's Status section points at it.
+//
+// WHEN IT CLOSES, this file should reach `not implemented:
+// proptest-core-nv.strategy.<fn>` on every case, with no edit.
+
+use std.test
+use std.list
+use tape
+use strategy
+
+@test
+fn test_just_draws_nothing() [io]
+    test.case("the value is the one given")
+    let (v, t) = strategy.draw_with(strategy.just(7), tape.from_seed(42))
+    test.assert(v == 7)
+
+    test.case("and the transcript is untouched, so a shrink has nothing to consider")
+    test.assert(list.len(tape.choices_of(t)) == 0)
+
+@test
+fn test_choice_zero_is_the_simplest_value() [io]
+    // The one rule the shrinker rests on, asserted for every generator
+    // that has a natural simplest value.  A transcript of zeros is
+    // what the shrinker walks towards, so what it produces is what a
+    // minimal counterexample looks like.
+    test.case("an integer range bottoms out at lo")
+    let (n, _) = strategy.draw_with(strategy.int_range(10, 20), tape.replay_of([0]))
+    test.assert(n == 10)
+
+    test.case("a boolean bottoms out at false")
+    let (b, _) = strategy.draw_with(strategy.bool_any(), tape.replay_of([0]))
+    test.assert(b == false)
+
+    test.case("an option bottoms out at None")
+    let (o, _) = strategy.draw_with(strategy.option_of(strategy.int_range(0, 9)),
+                                    tape.replay_of([0, 0]))
+    match o
+        Some(_) => test.fail("choice 0 is None")
+        None    => test.assert(true)
+
+    test.case("one_of bottoms out at the first branch")
+    let (c, _) = strategy.draw_with(
+        strategy.one_of([strategy.just(1), strategy.just(2)]), tape.replay_of([0]))
+    test.assert(c == 1)
+
+@test
+fn test_the_number_generators_that_go_looking_for_trouble() [io]
+    test.case("int_any is biased towards the values that break things")
+    let (n, _) = strategy.draw_with(strategy.int_any(), tape.replay_of([0]))
+    test.assert(n == 0)
+
+    test.case("float_range is finite only, so a property about NaN has to ask")
+    let (f, _) = strategy.draw_with(strategy.float_range(0.0, 1.0), tape.replay_of([0]))
+    test.assert(f >= 0.0)
+    test.assert(f < 1.0)
+
+    test.case("and float_special is where NaN and the infinities live")
+    let (s, _) = strategy.draw_with(strategy.float_special(), tape.replay_of([0]))
+    test.assert(s == 0.0)
+
+@test
+fn test_the_widest_tuple_is_four() [io]
+    test.case("beyond four a caller has a record, not a tuple")
+    let (q, _) = strategy.draw_with(
+        strategy.quad_of(strategy.just(1), strategy.just(2),
+                         strategy.just(3), strategy.just(4)),
+        tape.from_seed(42))
+    test.assert(q.0 == 1)
+    test.assert(q.3 == 4)
+
+@test
+fn test_an_empty_range_gives_a_value_rather_than_a_panic() [io]
+    test.case("lo greater than hi")
+    let (n, t) = strategy.draw_with(strategy.int_range(10, 5), tape.from_seed(42))
+    test.assert(n == 10)
+
+    test.case("and it still consumes a choice, so the transcript keeps its shape")
+    test.assert(list.len(tape.choices_of(t)) == 1)
+
+@test
+fn test_a_list_draws_its_length_first() [io]
+    // The ordering that makes delete-a-span work: the length is at the
+    // front of the transcript, the elements follow.
+    test.case("a length of zero uses one choice and produces nothing")
+    let (xs, t) = strategy.draw_with(
+        strategy.list_of(strategy.int_range(0, 9), 0, 8), tape.replay_of([0]))
+    test.assert(list.len(xs) == 0)
+    test.assert(list.len(tape.choices_of(t)) == 1)
+
+    test.case("and a fixed length draws that many elements after it")
+    let (ys, _) = strategy.draw_with(
+        strategy.list_of(strategy.int_range(0, 9), 2, 2), tape.replay_of([0, 3, 4]))
+    test.assert(list.len(ys) == 2)
+
+@test
+fn test_a_string_is_a_length_and_then_bytes() [io]
+    test.case("an empty string from a zero length")
+    let (s, _) = strategy.draw_with(strategy.str_of(ClassAlnum, 0, 16), tape.replay_of([0]))
+    test.assert(s == "")
+
+    test.case("and a class of one byte gives that byte repeated")
+    let (r, _) = strategy.draw_with(strategy.str_of(ClassOneOf("x"), 3, 3),
+                                    tape.replay_of([0, 0, 0, 0]))
+    test.assert(r == "xxx")
+
+@test
+fn test_a_tuple_draws_left_to_right() [io]
+    test.case("the left element's choices come first")
+    // A nested tuple pattern is not in the `let` grammar, so the pair
+    // is bound and read by position — which is also how a property
+    // written against `pair_of` will read it.
+    let (ab, _) = strategy.draw_with(
+        strategy.pair_of(strategy.int_range(0, 9), strategy.int_range(100, 199)),
+        tape.replay_of([0, 0]))
+    test.assert(ab.0 == 0)
+    test.assert(ab.1 == 100)
+
+    test.case("and the wider tuples do the same")
+    let (pqr, _) = strategy.draw_with(
+        strategy.triple_of(strategy.just(1), strategy.just(2), strategy.just(3)),
+        tape.from_seed(42))
+    test.assert(pqr.0 == 1)
+    test.assert(pqr.1 == 2)
+    test.assert(pqr.2 == 3)
+
+@test
+fn test_map_and_flat_map_compose() [io]
+    test.case("map transforms the value and not the transcript")
+    let (n, t) = strategy.draw_with(
+        strategy.map(strategy.int_range(0, 50), v => v * 2), tape.replay_of([0]))
+    test.assert(n == 0)
+    test.assert(list.len(tape.choices_of(t)) == 1)
+
+    test.case("flat_map reads the first value and then the second strategy")
+    let (xs, _) = strategy.draw_with(
+        strategy.flat_map(strategy.int_range(0, 4),
+                          k => strategy.list_of(strategy.just(9), k, k)),
+        tape.replay_of([0]))
+    test.assert(list.len(xs) == 0)
+
+@test
+fn test_a_filter_that_never_passes_ends_as_a_discard() [io]
+    test.case("the tape is marked overrun rather than hanging or lying")
+    let (_, t) = strategy.draw_with(
+        strategy.filter(strategy.int_range(0, 9), n => n > 100, 5),
+        tape.from_seed(42))
+    test.assert(tape.is_overrun(t))
+
+    test.case("and a filter that always passes costs one draw")
+    let (v, t2) = strategy.draw_with(
+        strategy.filter(strategy.int_range(0, 9), n => n >= 0, 5),
+        tape.replay_of([3]))
+    test.assert(v == 3)
+    test.assert(tape.is_overrun(t2) == false)
+
+@test
+fn test_sample_and_weighted() [io]
+    test.case("sample_of takes the first for choice zero")
+    let (m, _) = strategy.draw_with(strategy.sample_of(["GET", "POST"]), tape.replay_of([0]))
+    test.assert(m == "GET")
+
+    test.case("a zero weight is never taken")
+    let (w, _) = strategy.draw_with(
+        strategy.weighted_of([(0, strategy.just(1)), (1, strategy.just(2))]),
+        tape.replay_of([0]))
+    test.assert(w == 2)
+
+@test
+fn test_from_draw_is_the_escape_hatch() [io]
+    test.case("a caller's own drawing function composes with everything")
+    let g = strategy.from_draw(t => (7, t))
+    let (v, _) = strategy.draw_with(strategy.map(g, n => n + 1), tape.from_seed(42))
+    test.assert(v == 8)
