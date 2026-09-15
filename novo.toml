@@ -1,6 +1,6 @@
 [package]
 name        = "proptest-core-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "Generators and shrinking as arithmetic: a strategy is a pure function from a recorded, seeded choice sequence to a value, the combinators compose over that, and shrinking is a walk over the choice sequence that the runner drives. No randomness here — the seed and the PRNG step are both values."
 license     = "Apache-2.0"
 
