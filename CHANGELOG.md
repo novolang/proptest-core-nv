@@ -5,6 +5,14 @@ All notable changes to proptest-core-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.3 — 2026-09-25
+
+The README example now reverses with `list.rev`.  Under novo 0.10.0
+`list.reverse` reverses the list it is given in place, so the example
+no longer compiled.  Had it compiled, reversing twice in place would have
+compared the list with itself, and the property could not fail.
+`list.rev` answers a new list.  No change to the interface.
+
 ## 0.0.2 — 2026-09-15
 
 README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.

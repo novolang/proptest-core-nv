@@ -85,7 +85,7 @@ fn main() [io]
     let (xs, played) = strategy.draw_with(ints, tape.from_seed(42))
 
     // The property being checked, as an ordinary boolean.
-    let held = list.reverse(list.reverse(xs)) == xs
+    let held = list.rev(list.rev(xs)) == xs
 
     // Turn the boolean into an answer. The text is used only if it fails.
     let answer = propcheck.holds_if(held, "reverse is not an involution")
