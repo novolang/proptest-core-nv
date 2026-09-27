@@ -1,45 +1,4 @@
 // strategy_tests.nv — the API suite for the strategy combinators.
-//
-// **THIS FILE DOES NOT COMPILE ON THIS TOOLCHAIN, AND THAT IS THE
-// FINDING.**  It is red at the LLVM verifier rather than at
-// `not implemented`, and it is kept as written because what it fails
-// on is a compiler defect and not a design that needs changing.
-//
-// WHAT HAPPENS.  A generic function whose signature applies a generic
-// head to its type parameter — `fn just<T>(v: T) -> PropStrategy<T>` —
-// is not emitted for a call from another module.  The narrowest form
-// is one line:
-//
-//     let g = strategy.just(7)
-//
-// and it produces
-//
-//     llvm-as: error: use of undefined value '@novo_user_strategy_just'
-//
-// with two other faces depending on how the result is used: an E6000
-// internal compiler error ("cannot resolve this call's return type")
-// when a generic function TAKES the strategy and returns the type
-// parameter, and a `ptr` stored into an `i64` slot when the result is
-// annotated so the ICE's own fallback does not fire.  A generic whose
-// signature does not apply a generic head — `fn id<T>(v: T) -> T` —
-// works from the same place.
-//
-// The same failure happens between two modules under `src/`, so this
-// is not a test-harness problem: no consumer can call these functions
-// either, and the whole `strategy` surface is unreachable until the
-// defect closes.  `novo pkg build` reports success, because a library
-// build type-checks and emits nothing.
-//
-// WHY THE PACKAGE IS NOT BEING RESHAPED AROUND IT.  The alternative is
-// a monomorphic surface — `int_strategy`, `str_strategy`,
-// `int_list_strategy`, one function per element type — which is a
-// different library and a worse one, and the interfaces-first
-// milestone exists so that a design is reviewed before it is bent.
-// `PropStrategy<T>` is the design; the defect is filed against the
-// LLVM backend and the README's Status section points at it.
-//
-// WHEN IT CLOSES, this file should reach `not implemented:
-// proptest-core-nv.strategy.<fn>` on every case, with no edit.
 
 use std.test
 use std.list
