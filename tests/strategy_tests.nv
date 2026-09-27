@@ -40,6 +40,11 @@ fn test_choice_zero_is_the_simplest_value() [io]
         Some(_) => test.fail("choice 0 is None")
         None    => test.assert(true)
 
+    test.case("and choice 1 draws the value")
+    let (p, _) = strategy.draw_with(strategy.option_of(strategy.int_range(0, 9)),
+                                    tape.replay_of([1, 5]))
+    test.assert(p == Some(5))
+
     test.case("one_of bottoms out at the first branch")
     let (c, _) = strategy.draw_with(
         strategy.one_of([strategy.just(1), strategy.just(2)]), tape.replay_of([0]))
@@ -164,6 +169,12 @@ fn test_sample_and_weighted() [io]
         strategy.weighted_of([(0, strategy.just(1)), (1, strategy.just(2))]),
         tape.replay_of([0]))
     test.assert(w == 2)
+
+    test.case("when every weight is zero, the first branch is taken")
+    let (z, _) = strategy.draw_with(
+        strategy.weighted_of([(0, strategy.just(1)), (0, strategy.just(2))]),
+        tape.replay_of([0]))
+    test.assert(z == 1)
 
 @test
 fn test_from_draw_is_the_escape_hatch() [io]
