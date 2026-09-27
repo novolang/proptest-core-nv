@@ -1,29 +1,22 @@
 // propcheck.nv — what a property answers, and what a failure is.
 //
-// A PROPERTY ANSWERS WITH A VALUE, not by panicking and not by
-// printing.  Three answers, because two is not enough:
+// A property answers with a value, not by panicking or printing, and
+// there are three answers:
 //
 //   PropHolds        the property held for this case
-//   PropBroke(why)   it did not, and here is what was wrong
-//   PropSkip         this case did not meet the precondition
+//   PropBroke(why)   it did not, and `why` says what was wrong
+//   PropSkip         the case did not meet the precondition
 //
-// `PropSkip` is hypothesis's `assume` and QuickCheck's `==>`.  Without
-// it a precondition has to be an `if` that returns "held", and a
-// property that skips nine cases in ten looks like a property that
-// passed a thousand times.  The runner counts skips separately and
-// gives up on a strategy that skips too many, which is the diagnosis a
-// person needs — "your generator does not produce the values your
-// property is about".
+// `PropSkip` is Hypothesis's `assume` and QuickCheck's `==>`.  A runner
+// counts skips apart, so a property that skips nine cases in ten does
+// not look like one that passed.
 //
-// `why` IS A STRING and that is a deliberate limit.  It is the one
-// place text appears in this package, and it is the property author's
-// own words about their own assertion — not this package deciding how
-// a failure reads.  A structured reason would have to be generic over
-// the caller's error type, and every caller would then need a
-// conversion for a field only a report ever looks at.
+// `why` is a string, the property author's own words.  A structured
+// reason would have to be generic over the caller's error type for a
+// field only a report reads.
 //
-// **NOTHING HERE PRINTS.**  A `PropFailure` is a value with fields; a
-// runner renders it, and `proptest-nv` is where a rendering exists.
+// Nothing here prints.  A `PropFailure` is a value with fields, and the
+// runner renders it.
 
 // What a property says about one case.
 //
@@ -81,7 +74,10 @@ pub struct PropFailure<T>
 //     println(propcheck.check_name(PropSkip))
 // ```
 pub fn check_name(c: PropCheck) -> Str
-    todo("proptest-core-nv.propcheck.check_name")
+    match c
+        PropHolds    => "holds"
+        PropBroke(_) => "broke"
+        PropSkip     => "skip"
 
 // Whether an answer is a failure.
 //
@@ -96,7 +92,9 @@ pub fn check_name(c: PropCheck) -> Str
 //     println("${propcheck.broke(PropSkip)}")
 // ```
 pub fn broke(c: PropCheck) -> Bool
-    todo("proptest-core-nv.propcheck.broke")
+    match c
+        PropBroke(_) => true
+        _            => false
 
 // The reason inside a `PropBroke`, or `None`.
 //
@@ -109,7 +107,9 @@ pub fn broke(c: PropCheck) -> Bool
 //         None    => println("nothing was wrong")
 // ```
 pub fn reason_of(c: PropCheck) -> ?Str
-    todo("proptest-core-nv.propcheck.reason_of")
+    match c
+        PropBroke(why) => Some(why)
+        _              => None
 
 // `PropHolds` when true, `PropBroke(why)` when false.
 //
@@ -124,7 +124,10 @@ pub fn reason_of(c: PropCheck) -> ?Str
 //     println(propcheck.check_name(propcheck.holds_if(1 == 1, "one is one")))
 // ```
 pub fn holds_if(cond: Bool, why: Str) -> PropCheck
-    todo("proptest-core-nv.propcheck.holds_if")
+    if cond
+        PropHolds
+    else
+        PropBroke(why)
 
 // `PropHolds` when the precondition is met, `PropSkip` when it is not.
 //
@@ -140,7 +143,10 @@ pub fn holds_if(cond: Bool, why: Str) -> PropCheck
 //     println(propcheck.check_name(propcheck.assumed(false)))
 // ```
 pub fn assumed(cond: Bool) -> PropCheck
-    todo("proptest-core-nv.propcheck.assumed")
+    if cond
+        PropHolds
+    else
+        PropSkip
 
 // The first answer that is not `PropHolds`, or `PropHolds`.
 //
@@ -155,7 +161,10 @@ pub fn assumed(cond: Bool) -> PropCheck
 //     println(propcheck.check_name(propcheck.all_of([PropHolds, PropSkip])))
 // ```
 pub fn all_of(cs: [PropCheck]) -> PropCheck
-    todo("proptest-core-nv.propcheck.all_of")
+    for c in cs
+        if check_name(c) != "holds"
+            return c
+    PropHolds
 
 // A failure, assembled.
 //
@@ -170,18 +179,19 @@ pub fn all_of(cs: [PropCheck]) -> PropCheck
 // ```
 pub fn failure<T>(seed: Int, choices: [Int], value: T, why: Str, cases: Int,
                   shrinks: Int) -> PropFailure<T>
-    todo("proptest-core-nv.propcheck.failure")
+    PropFailure { seed: seed, choices: choices, value: value, why: why, cases: cases,
+                  shrinks: shrinks }
 
 // The line that reproduces a failure, as text.
 //
-// The one rendering in this package, and it renders the SEED and the
-// TRANSCRIPT — never the value, which is generic and has no
+// The one rendering in this package, and it renders the seed and the
+// transcript — never the value, which is generic and has no
 // universal spelling. It is here rather than in the runner because it
 // is the contract between them: the string a report prints and the
 // string a person pastes back into a test are the same string, and one
 // function is how they stay that way.
 //
-// **It returns the text; it does not print it.**
+// It returns the text; it does not print it.
 //
 // ```novo
 // use propcheck
@@ -190,7 +200,10 @@ pub fn failure<T>(seed: Int, choices: [Int], value: T, why: Str, cases: Int,
 //     println(propcheck.replay_line(42, [3, 1, 4]))
 // ```
 pub fn replay_line(seed: Int, choices: [Int]) -> Str
-    todo("proptest-core-nv.propcheck.replay_line")
+    let head = "seed ${seed} choices"
+    if list.len(choices) == 0
+        return head
+    head + " " + str.join(list.map(choices, c => "${c}"), ",")
 
 // The seed and transcript back out of a line `replay_line` produced.
 //
@@ -207,4 +220,13 @@ pub fn replay_line(seed: Int, choices: [Int]) -> Str
 //         None         => println("not a replay line")
 // ```
 pub fn parse_replay_line(text: Str) -> ?(Int, [Int])
-    todo("proptest-core-nv.propcheck.parse_replay_line")
+    let words = list.filter(str.split(str.trim(text), " "), w => w != "")
+    let n = list.len(words)
+    if n < 3 or n > 4 or words[0] != "seed" or words[2] != "choices"
+        return None
+    let seed = str.to_int(words[1])!
+    var choices: [Int] = []
+    if n == 4
+        for part in str.split(words[3], ",")
+            list.push(choices, str.to_int(part)!)
+    Some((seed, choices))

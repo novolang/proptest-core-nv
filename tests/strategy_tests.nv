@@ -46,6 +46,11 @@ use std.list
 use tape
 use strategy
 
+// A list of `k` nines: the second strategy of a `flat_map`, as a named
+// function.  `flatmap_lambda_tests.nv` writes the same with a lambda.
+fn nines(k: Int) -> PropStrategy<[Int]>
+    strategy.list_of(strategy.just(9), k, k)
+
 @test
 fn test_just_draws_nothing() [io]
     test.case("the value is the one given")
@@ -170,11 +175,9 @@ fn test_map_and_flat_map_compose() [io]
     test.assert(list.len(tape.choices_of(t)) == 1)
 
     test.case("flat_map reads the first value and then the second strategy")
-    let (xs, _) = strategy.draw_with(
-        strategy.flat_map(strategy.int_range(0, 4),
-                          k => strategy.list_of(strategy.just(9), k, k)),
-        tape.replay_of([0]))
-    test.assert(list.len(xs) == 0)
+    let (xs, t2) = strategy.draw_with(strategy.flat_map(strategy.int_range(0, 4), nines),
+                                      tape.replay_of([2, 0]))
+    test.assert(xs == [9, 9] and tape.choices_of(t2) == [2, 0])
 
 @test
 fn test_a_filter_that_never_passes_ends_as_a_discard() [io]

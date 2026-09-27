@@ -1,0 +1,210 @@
+// laws_tests.nv — the README's rules, as a small runner would meet
+// them.
+//
+// The runner here is the loop proptest-nv runs: draw cases from a
+// seed, stop at the first that breaks the property, and walk the
+// shrink plan, replaying each candidate and answering `keep` or
+// `reject`.  Each case states the minimal counterexample the walk has
+// to reach, worked out by hand from the rule that a smaller choice is a
+// simpler value.  splitmix64's first outputs from state 0 are the
+// published reference values.
+
+use std.test
+use std.list
+use tape
+use strategy
+use shrink
+use propcheck
+
+// The first failure among `cases` draws from `seed`, shrunk; `None`
+// when every case held.
+fn run_prop<T>(g: PropStrategy<T>, seed: Int, cases: Int,
+               prop: fn(T) -> PropCheck) -> ?PropFailure<T>
+    var s = seed
+    for i in 0..cases
+        let (v, t) = strategy.draw_with(g, tape.from_seed(s))
+        let answer = prop(v)
+        if propcheck.broke(answer)
+            return Some(minimised(g, s, tape.choices_of(t), answer, prop, i + 1))
+        let (_, next) = tape.split_step(s)
+        s = next
+    None
+
+// The shrink walk, driven to its end.  A candidate that overruns is
+// rejected, because the value it builds was never generated.  A kept
+// candidate is handed back as the transcript its replay consumed, which
+// drops unread choices and reduces each one below its bound.
+fn minimised<T>(g: PropStrategy<T>, seed: Int, choices: [Int], answer: PropCheck,
+                prop: fn(T) -> PropCheck, cases: Int) -> PropFailure<T>
+    var p = shrink.plan_from(choices)
+    var why = propcheck.reason_of(answer) ?? ""
+    while not shrink.is_done(p)
+        let Some(t) = shrink.next_try(p) else break
+        let (cv, ct) = strategy.draw_with(g, tape.replay_from(seed, t.candidate))
+        let again = prop(cv)
+        if not tape.is_overrun(ct) and propcheck.broke(again)
+            p = shrink.keep(p, ShrinkTry { candidate: tape.choices_of(ct), by_pass: t.by_pass,
+                                           at: t.at })
+            why = propcheck.reason_of(again) ?? why
+        else
+            p = shrink.reject(p, t)
+    let (best, _) = strategy.draw_with(g, tape.replay_from(seed, shrink.best_of(p)))
+    propcheck.failure(seed, shrink.best_of(p), best, why, cases, shrink.shrinks_of(p))
+
+fn short(xs: [Int]) -> PropCheck
+    propcheck.holds_if(list.len(xs) < 3, "three or more elements")
+
+fn small(n: Int) -> PropCheck
+    propcheck.holds_if(n < 1000, "a thousand or more")
+
+fn all_low(xs: [Int]) -> PropCheck
+    propcheck.holds_if(list.all(xs, x => x < 50), "an element of fifty or more")
+
+fn sum_low(p: (Int, Int)) -> PropCheck
+    propcheck.holds_if(p.0 + p.1 < 50, "the pair sums to fifty or more")
+
+fn no_b(s: Str) -> PropCheck
+    propcheck.holds_if(not str.contains(s, "b"), "a b")
+
+fn lists() -> PropStrategy<[Int]>
+    strategy.list_of(strategy.int_range(0 - 99, 99), 0, 32)
+
+@test
+fn test_the_prng_is_splitmix64() [io]
+    test.case("the reference outputs from state 0")
+    let (v1, s1) = tape.split_step(0)
+    test.assert(v1 == 0 - 2152535657050944081 and s1 == 0 - 7046029254386353131)
+    let (v2, s2) = tape.split_step(s1)
+    test.assert(v2 == 7960286522194355700 and s2 == 4354685564936845354)
+    let (v3, _) = tape.split_step(s2)
+    test.assert(v3 == 487617019471545679)
+
+@test
+fn test_a_shrink_reaches_the_boundary() [io]
+    test.case("a list property shrinks to the shortest list that breaks it, of lo values")
+    match run_prop(lists(), 42, 100, short)
+        Some(f) =>
+            test.assert(f.value == [0 - 99, 0 - 99, 0 - 99])
+            test.assert(f.choices == [3, 0, 0, 0])
+            test.assert(f.why == "three or more elements" and f.shrinks > 0 and f.seed == 42)
+        None    => test.assert(false)
+
+    test.case("an integer property shrinks to the exact number it breaks at")
+    match run_prop(strategy.int_range(0, 10000), 7, 100, small)
+        Some(f) => test.assert(f.value == 1000 and f.choices == [1000])
+        None    => test.assert(false)
+
+    test.case("one bad element is found and the rest deleted")
+    match run_prop(strategy.list_of(strategy.int_range(0, 100), 0, 10), 3, 100, all_low)
+        Some(f) => test.assert(f.value == [50])
+        None    => test.assert(false)
+
+    test.case("a pair is minimal from the left")
+    match run_prop(strategy.pair_of(strategy.int_range(0, 100), strategy.int_range(0, 100)), 5,
+                   100, sum_low)
+        Some(f) => test.assert(f.value.0 == 0 and f.value.1 == 50)
+        None    => test.assert(false)
+
+    test.case("a string shrinks to the one byte that breaks it")
+    match run_prop(strategy.str_of(ClassAlpha, 0, 20), 11, 200, no_b)
+        Some(f) => test.assert(f.value == "b")
+        None    => test.assert(false)
+
+@test
+fn test_one_seed_is_one_run() [io]
+    test.case("the same seed gives the same failure and the same minimal case")
+    let a = run_prop(lists(), 99, 100, short)
+    let b = run_prop(lists(), 99, 100, short)
+    match (a, b)
+        (Some(fa), Some(fb)) => test.assert(fa.choices == fb.choices and fa.cases == fb.cases)
+        _                    => test.assert(false)
+    test.case("and a property that always holds finds nothing")
+    test.assert(run_prop(strategy.int_range(0, 9), 1, 50, small) == None)
+
+@test
+fn test_a_generation_is_a_function_of_its_transcript() [io]
+    test.case("replaying a generation's transcript gives the value again")
+    let g = strategy.pair_of(lists(), strategy.str_of(ClassPrintable, 0, 8))
+    let (v, t) = strategy.draw_with(g, tape.from_seed(123))
+    let (again, t2) = strategy.draw_with(g, tape.replay_of(tape.choices_of(t)))
+    test.assert(again.0 == v.0 and again.1 == v.1)
+    test.assert(tape.choices_of(t2) == tape.choices_of(t) and not tape.is_overrun(t2))
+
+@test
+fn test_a_small_draw_is_biased_small_and_replays_as_its_value() [io]
+    test.case("over a thousand seeds, sizes up to 32 are mostly small")
+    var small_count = 0
+    var s = 1
+    for _ in 0..1000
+        let (n, _) = tape.next_small(tape.from_seed(s), 0, 32)
+        if n <= 4
+            small_count = small_count + 1
+        let (_, next) = tape.split_step(s)
+        s = next
+    test.assert(small_count > 300)
+    test.case("and a recorded size is replayed as itself")
+    let (n, t) = tape.next_small(tape.replay_of([7]), 2, 40)
+    test.assert(n == 9 and tape.choices_of(t) == [7])
+
+@test
+fn test_every_generator_reads_choice_zero_as_its_simplest_value() [io]
+    let zeros = tape.replay_of([0, 0, 0, 0, 0, 0])
+    test.case("int_any, float_range, str_of, sample_of and weighted_of")
+    let (i, _) = strategy.draw_with(strategy.int_any(), zeros)
+    let (f, _) = strategy.draw_with(strategy.float_range(2.0, 3.0), zeros)
+    let (s, _) = strategy.draw_with(strategy.str_of(ClassDigit, 0, 5), zeros)
+    let (w, _) = strategy.draw_with(strategy.weighted_of([(3, strategy.just(1)),
+                                                          (1, strategy.just(2))]),
+                                                          zeros)
+    test.assert(i == 0 and f == 2.0 and s == "" and w == 1)
+    test.case("larger choices reach the edges int_any looks for")
+    let (e, _) = strategy.draw_with(strategy.int_any(), tape.replay_of([1, 13]))
+    test.assert(e == 9223372036854775807)
+    let (m, _) = strategy.draw_with(strategy.int_any(), tape.replay_of([0, 1]))
+    test.assert(m == 1)
+    let (wide, _) = strategy.draw_with(strategy.int_any(), tape.replay_of([2, 0, 0]))
+    test.assert(wide == 0 - 9223372036854775807 - 1)
+
+fn involution(xs: [Int]) -> PropCheck
+    propcheck.holds_if(list.rev(list.rev(xs)) == xs, "not an involution")
+
+@test
+fn test_what_proptest_nv_asks_of_a_replay() [io]
+    test.case("the recorded case its suite replays fails, and is not overrun")
+    let (xs, t) = strategy.draw_with(lists(), tape.replay_of([3, 0, 0, 0]))
+    test.assert(propcheck.broke(short(xs)) and not tape.is_overrun(t))
+    test.case("a transcript of one zero is the empty list, which holds")
+    let (ys, t2) = strategy.draw_with(lists(), tape.replay_of([0]))
+    test.assert(ys == [] and involution(ys) == PropHolds and not tape.is_overrun(t2))
+    test.case("an empty transcript overruns, so the case is discarded rather than judged")
+    let (_, t3) = strategy.draw_with(lists(), tape.replay_of([]))
+    test.assert(tape.is_overrun(t3))
+    test.case("and a failure's replay line parses back to its seed and transcript")
+    match run_prop(lists(), 42, 100, short)
+        Some(f) =>
+            match propcheck.parse_replay_line(propcheck.replay_line(f.seed, f.choices))
+                Some((seed, cs)) => test.assert(seed == 42 and cs == [3, 0, 0, 0])
+                None             => test.assert(false)
+        None    => test.assert(false)
+
+@test
+fn test_the_corners_of_the_generators() [io]
+    test.case("a range at least Int.max wide is drawn in two choices")
+    let (w, _) = strategy.draw_with(strategy.int_range(0 - 4611686018427387904,
+                                                       4611686018427387904),
+                                    tape.replay_of([2147483647, 4294967295]))
+    test.assert(w == 4611686018427387903)
+    test.case("an empty float range gives its low end")
+    let (f, _) = strategy.draw_with(strategy.float_range(1.0, 1.0), tape.replay_of([5]))
+    test.assert(f == 1.0)
+    test.case("the ASCII and any-byte classes start at byte 0")
+    let (a, _) = strategy.draw_with(strategy.str_of(ClassAscii, 1, 1), tape.replay_of([0, 65]))
+    let (b, _) = strategy.draw_with(strategy.str_of(ClassAnyByte, 1, 1), tape.replay_of([0, 200]))
+    test.assert(a == "A" and str.byte_at(b, 0) == Some(200))
+    test.case("an empty transcript's replay line has no choices after the word")
+    test.assert(propcheck.replay_line(7, []) == "seed 7 choices")
+    match propcheck.parse_replay_line("seed 7 choices")
+        Some((s, cs)) => test.assert(s == 7 and cs == [])
+        None          => test.assert(false)
+    test.assert(propcheck.parse_replay_line("seed x choices") == None)
+    test.assert(propcheck.parse_replay_line("seed 1 choices 1,y") == None)

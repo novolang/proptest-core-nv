@@ -13,12 +13,6 @@ built on this package, and
 [fake-nv](https://novo-lang.org/packages/fake-nv) is fixture data built
 on the same strategies.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is declared
-with its full signature, but every body is a `todo()` that panics when
-called. The package is published so its design can be reviewed and
-depended on before it is implemented. Version 0.1.0 will be the first
-working release.
-
 ## What it is
 
 A **property** is a fact about a program that should hold for every
@@ -99,11 +93,6 @@ fn main() [io]
     println("${shrink.is_done(plan)}")
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: proptest-core-nv.<module>.<fn>` panic. The tests are
-the specification the implementation will have to satisfy.
-
 ## What the package contains
 
 | Module | Contents |
@@ -172,19 +161,24 @@ this package does not offer wraps the drawing function in a
 8. **The shrink walk does not advance until it is answered.** Calling
    `shrink.next_try` twice without a `keep` or a `reject` offers the same
    candidate both times. That is what makes a walk resumable, and what
-   lets a test assert one step of it.
-9. **A transcript is not a seed.** `tape.replay_of` reports a seed of 0,
+   lets a test assert one step of it. A runner that keeps a candidate
+   may hand back the transcript its replay consumed, which is never
+   longer and drops the choices the strategy did not read.
+9. **A size is one choice, read back as itself.** `tape.next_small`
+   biases a fresh draw towards small sizes and records the size's offset
+   from its lower bound, so lowering that choice shortens the list.
+10. **A transcript is not a seed.** `tape.replay_of` reports a seed of 0,
    because the transcript it holds is not the number that produced it.
    Use `replay_from` when both are known.
-10. **`tape.split_step` fixes what every seed means.** It is the
+11. **`tape.split_step` fixes what every seed means.** It is the
     splitmix64 step, published so a caller can check this toolchain's
     arithmetic against the reference values. Changing it changes the
     value every seed produces, so it changes only on a minor version bump
     and the change is recorded in `CHANGELOG.md`.
-11. **No function in this package performs input or output.** There is no
+12. **No function in this package performs input or output.** There is no
     randomness, no clock and no file. A failure is a value with fields,
     and rendering it is the runner's work.
-12. **A trait cannot express this design in novo-lang, which is why a
+13. **A trait cannot express this design in novo-lang, which is why a
     strategy is a struct.** A trait bound carries an effect argument and
     never a type argument (SPEC section 3.6), so a combinator generic
     over the value type cannot be written against a trait. A trait object
@@ -200,15 +194,6 @@ this package does not offer wraps the drawing function in a
 - **Randomness.** A package that declares no effects cannot draw from the
   operating system. The seed is an integer a caller supplies, which is
   also what makes a failure reproducible from one printed number.
-- **A generic helper of your own that forwards to these functions.** A
-  function you declare outside this package, generic over the same type
-  parameter, that calls `strategy.draw_with`, `strategy.just` or another
-  generic function here, fails to build: the compiler emits a call to a
-  symbol it never generated. Call these functions directly, or give your
-  helper a concrete value type such as `PropStrategy<Int>`. The defect is
-  recorded as
-  `generic-forwarding-to-a-package-generic-skips-monomorphisation`, and
-  when it closes the restriction goes away with no signature changing.
 - **Deriving a strategy from a type.** An `Arbitrary` equivalent needs an
   associated type and a blanket implementation, neither of which the
   language has. A program writes its strategies, which is more typing and
@@ -247,51 +232,27 @@ this package does not offer wraps the drawing function in a
 ## Tests
 
 ```bash
-novo test tests/tape_tests.nv        # 15 tests: the tape, the shrink walk, the answers
-novo test tests/strategy_tests.nv    # 12 tests: the combinators
+novo test tests/laws_tests.nv        # one suite; the table below lists them all
+bash tests/coverage.sh               # every suite, and the line coverage of src/
 ```
 
-The reference implementations are Hypothesis, for the choice-sequence
-model, the shrink passes and their order, and the rule that an overrun is
-a discard; proptest, for the combinator vocabulary and for the insistence
-that a failure report carries its seed; and QuickCheck, for a skipped
-precondition being a third answer rather than a silent pass.
-
-No test draws a random number or reads a clock. Every case fixes a seed
-or writes a transcript out by hand and asserts an exact answer, so none of
-them can be flaky. The suite asserts that one seed always gives one
-sequence of choices, that every draw is recorded even when the bound
-leaves no choice, that a transcript replays exactly, that a sealed tape
-overruns rather than inventing values, that the shrink order is shorter
-first and then numerically smaller, that the six passes are a published
-order, that the walk waits to be answered before it advances, that a
-skipped case has not failed, and that a replay line parses back to the
-seed and transcript it was printed from.
-
-The tests compile today and fail at run, each on the
-`not implemented: proptest-core-nv.<module>.<fn>` panic that is its body.
-That is the expected state of an interface release. They turn green one at
-a time as bodies land.
-
-## Implementation status
-
-| Item | Implemented |
+| Suite | What it asserts |
 | --- | --- |
-| `tape.from_seed`, `.replay_of`, `.replay_from` | no |
-| `tape.next`, `.next_small`, `.split_step` | no |
-| `tape.choices_of`, `.seed_of`, `.is_overrun`, `.remaining` | no |
-| `strategy.draw_with`, `.from_draw`, `.just` | no |
-| `strategy.int_range`, `.int_any`, `.float_range`, `.float_special`, `.bool_any` | no |
-| `strategy.str_of`, `.list_of`, `.option_of` | no |
-| `strategy.pair_of`, `.triple_of`, `.quad_of` | no |
-| `strategy.one_of`, `.weighted_of`, `.sample_of` | no |
-| `strategy.map`, `.filter`, `.flat_map` | no |
-| `shrink.passes`, `.pass_name`, `.simpler_than` | no |
-| `shrink.plan_from`, `.next_try`, `.keep`, `.reject` | no |
-| `shrink.best_of`, `.shrinks_of`, `.tried_of`, `.is_done` | no |
-| `propcheck.check_name`, `.broke`, `.reason_of` | no |
-| `propcheck.holds_if`, `.assumed`, `.all_of` | no |
-| `propcheck.failure`, `.replay_line`, `.parse_replay_line` | no |
+| `tape_tests.nv` | The tape, the shrink walk's contract, the three answers and the replay line |
+| `strategy_tests.nv` | Every combinator, and choice 0 as each generator's simplest value |
+| `laws_tests.nv` | The rules above, met by a small runner: splitmix64's reference outputs, shrinks that reach the exact boundary a property breaks at, one seed giving one run, a generation replayed from its transcript, and what proptest-nv's own suite asks of a replay |
+| `flatmap_lambda_tests.nv` | `strategy.flat_map` with a lambda, as its documented example writes it |
+
+The reference implementations are Hypothesis, for the choice-sequence
+model, the shrink passes and the rule that an overrun is a discard;
+proptest, for the combinator vocabulary and a failure report that
+carries its seed; and QuickCheck, for a skipped precondition being a
+third answer rather than a silent pass. splitmix64's reference outputs
+from state 0 are the oracle for `tape.split_step`.
+
+No test draws from the operating system or reads a clock. Every case
+fixes a seed or writes a transcript out by hand, and asserts an exact
+answer.
 
 ## Licence
 

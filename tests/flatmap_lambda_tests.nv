@@ -1,0 +1,17 @@
+// flatmap_lambda_tests.nv — `strategy.flat_map` with its second
+// strategy written as a lambda, the way its documented example writes
+// it.
+
+use std.test
+use std.list
+use tape
+use strategy
+
+@test
+fn test_flat_map_takes_a_lambda() [io]
+    test.case("a length, and then a list of that length")
+    let (xs, _) = strategy.draw_with(
+        strategy.flat_map(strategy.int_range(0, 4),
+                          k => strategy.list_of(strategy.just(9), k, k)),
+        tape.replay_of([0]))
+    test.assert(list.len(xs) == 0)

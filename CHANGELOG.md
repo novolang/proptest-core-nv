@@ -5,6 +5,33 @@ All notable changes to proptest-core-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.1.0 — 2026-09-27
+
+The first implementation of the interface published as 0.0.1.
+
+### Added
+
+- `tape`: splitmix64 seeded draws, sealed replays that overrun, and a
+  size draw that is one choice, biased small on a fresh tape.
+- `strategy`: every combinator, each keeping the rule that a smaller
+  choice gives a simpler value.  A range at least `Int.max` wide is
+  drawn in two choices.
+- `shrink`: the six passes in their published order.  The delete pass
+  also tries each deletion with the choice before it lowered by one,
+  which is what removing a list's element does to its length.
+- `propcheck`: the three answers, the failure value and the replay
+  line `seed <n> choices <c>,<c>,...`.
+
+### Changed
+
+- `ShrinkPlan` has a field `round_start`, the accepted count when the
+  current round of passes began; a round that accepted anything starts
+  another.
+- `strategy.one_of` and `strategy.sample_of` panic on an empty list,
+  where the interface said they would answer a zero value, which a
+  generic function cannot build.
+- The toolchain floor is 0.13.0.
+
 ## 0.0.3 — 2026-09-25
 
 The README example now reverses with `list.rev`.  Under novo 0.10.0

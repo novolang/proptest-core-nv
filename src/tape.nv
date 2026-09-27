@@ -1,49 +1,24 @@
-// tape.nv — the deterministic source every strategy draws from, and
-// the record it leaves behind.
+// tape.nv — the source every strategy draws from, and the record it
+// leaves behind.
 //
-// A TAPE IS TWO THINGS AT ONCE, and that is the whole trick:
+// A tape is a source and a record at once.  `next(t, bound)` gives an
+// integer in `[0, bound)`, and every integer it gives is kept.  So a
+// generation is a function of the tape, and the list the tape kept, the
+// transcript, reproduces it: hand the transcript to `replay_of` and the
+// same strategy produces the same value.  Shrinking is then arithmetic
+// on that list, the same for every strategy.
 //
-//   a SOURCE   — `next(t, bound)` gives an integer in `[0, bound)`
-//   a RECORD   — every integer it gave is kept in `drawn`
+// The numbers come from a seed and the splitmix64 step, written here.
+// The same seed gives the same numbers on every machine, and no clock
+// or operating system is consulted.
 //
-// So a generation is a function of the tape, and the tape's `drawn`
-// list is a complete transcript of that generation.  Hand the
-// transcript back through `replay_of` and the same strategy produces
-// the same value, with no randomness in the room.  Shrinking is then
-// arithmetic on that list, and it works for every strategy at once —
-// which is the reason this package is shaped the way it is.
+// A tape from `replay_of` is sealed: when its transcript runs out it
+// sets `overrun` and answers 0 to every further draw.  A case built
+// from those zeros was never generated, so a runner discards it rather
+// than judging it (Hypothesis's rule).
 //
-// WHERE THE NUMBERS COME FROM.  A `u64` seed and a splitmix64 step,
-// written here.  Three alternatives were available and this is why it
-// is not any of them:
-//
-//   `[rand]`                  a `core` package may not have it.
-//   a bound `Rand[e]`         SPEC § 3.6's grammar is
-//   effect parameter          `trait_bound ::= TYPE_IDENT [ '[' ident ']' ]`
-//                             — a bound carries an EFFECT argument and
-//                             never a TYPE argument, so a bound generic
-//                             over the value type cannot be spelled at
-//                             all.  And even where it could: an impl
-//                             the caller supplies is only reproducible
-//                             if the caller made it so, and
-//                             reproducing a failure from a printed
-//                             seed is the feature.
-//   the host fills a buffer   hypothesis's literal shape.  It works,
-//   and the core only reads   and it makes the host guess how many
-//                             integers a generation will need.  The
-//                             PRNG here removes the guess and keeps
-//                             the transcript.
-//
-// OVERRUN.  A tape built by `replay_of` is SEALED: when its list runs
-// out, it does not draw — it sets `overrun` and answers 0 to every
-// further request.  That is hypothesis's rule, and it is what makes a
-// shorter candidate transcript meaningful: the case is DISCARDED
-// rather than counted, because a value assembled from zeros is not
-// the value the shrink was proposing.
-//
-// EVERY FUNCTION HERE DECLARES NOTHING.  A tape is a value and each
-// call returns a new one; there is no mutation, so `[mutate]` — a host
-// effect — never comes up.
+// Every call answers a new tape and leaves the one it was given as it
+// was.  No function here has an effect.
 
 // A seeded, recording source of choices.
 //
@@ -55,7 +30,7 @@
 // ```
 pub struct Tape
     // The splitmix64 state.  Starts at the seed and advances on every
-    // fresh draw.  `seed_of` gives back the ORIGINAL seed, which is
+    // fresh draw.  `seed_of` gives back the original seed, which is
     // the number a failure report carries.
     state: Int
     // The seed this tape started from, kept so a transcript can name
@@ -77,7 +52,7 @@ pub struct Tape
 // A fresh tape from a seed.
 //
 // Unsealed: it draws as long as it is asked to, and records what it
-// drew.  This is what the runner uses to GENERATE a case.
+// drew.  This is what the runner uses to generate a case.
 //
 // ```novo
 // use tape
@@ -86,12 +61,12 @@ pub struct Tape
 //     println("${tape.is_overrun(tape.from_seed(42))}")
 // ```
 pub fn from_seed(seed: Int) -> Tape
-    todo("proptest-core-nv.tape.from_seed")
+    Tape { state: seed, seed: seed, replay: [], pos: 0, drawn: [], sealed: false, overrun: false }
 
 // A sealed tape that replays a transcript.
 //
 // Draws nothing of its own: when the list runs out it is `overrun`.
-// This is what the runner uses to REPRODUCE a case, and what every
+// This is what the runner uses to reproduce a case, and what every
 // shrink candidate is played through.
 //
 // The seed it reports is 0, because a transcript is not a seed and
@@ -105,7 +80,7 @@ pub fn from_seed(seed: Int) -> Tape
 //     println("${tape.remaining(tape.replay_of([3, 1, 4]))}")
 // ```
 pub fn replay_of(choices: [Int]) -> Tape
-    todo("proptest-core-nv.tape.replay_of")
+    replay_from(0, choices)
 
 // A sealed tape that replays a transcript and remembers the seed it
 // came from.
@@ -121,9 +96,10 @@ pub fn replay_of(choices: [Int]) -> Tape
 //     println("${tape.seed_of(tape.replay_from(42, [3, 1, 4]))}")
 // ```
 pub fn replay_from(seed: Int, choices: [Int]) -> Tape
-    todo("proptest-core-nv.tape.replay_from")
+    Tape { state: seed, seed: seed, replay: choices, pos: 0, drawn: [], sealed: true,
+           overrun: false }
 
-// **The one primitive draw**: an integer in `[0, bound)`, and the
+// The one primitive draw: an integer in `[0, bound)`, and the
 // tape that follows it.
 //
 // `bound` of 1 or less gives 0 and still records it, because a
@@ -143,18 +119,32 @@ pub fn replay_from(seed: Int, choices: [Int]) -> Tape
 //     println("${n >= 0}")
 // ```
 pub fn next(t: Tape, bound: Int) -> (Int, Tape)
-    todo("proptest-core-nv.tape.next")
+    if t.pos < list.len(t.replay)
+        let v = t.replay[t.pos]
+        let c = if bound <= 1
+            0
+        else
+            (v % bound + bound) % bound
+        return (c, recorded(t, c, t.state, t.pos + 1, false))
+    if t.sealed
+        return (0, recorded(t, 0, t.state, t.pos, true))
+    if bound <= 1
+        return (0, recorded(t, 0, t.state, t.pos, false))
+    let (v, s) = split_step(t.state)
+    let c = (v & max_positive()) % bound
+    (c, recorded(t, c, s, t.pos, false))
 
 // A draw biased towards small values, for a size that should usually
 // be small.
 //
-// `next` is uniform, which makes a list-length draw produce long lists
-// as often as short ones and buries the small counterexample a person
-// wanted.  This picks a magnitude first and then a value inside it, so
-// 0 and 1 are common and the maximum is rare — proptest's and
-// hypothesis's size distributions both do this, and doing it here
-// rather than inside `list_of` means every size draw in the package
-// shares one rule.
+// `next` is uniform, which would make long lists as common as short
+// ones.  A fresh tape picks a bit length first and then a value of at
+// most that many bits, so small values are common and the maximum is
+// rare, as proptest's and Hypothesis's size draws are.
+//
+// The draw is one choice, the value's offset from `lo`, recorded as
+// such.  A replaying tape reads it back as that offset, modulo the
+// range, so a smaller choice is always a smaller size.
 //
 // ```novo
 // use tape
@@ -164,7 +154,17 @@ pub fn next(t: Tape, bound: Int) -> (Int, Tape)
 //     println("${n >= 0}")
 // ```
 pub fn next_small(t: Tape, lo: Int, hi: Int) -> (Int, Tape)
-    todo("proptest-core-nv.tape.next_small")
+    let n = hi - lo + 1
+    if n <= 1 or t.pos < list.len(t.replay) or t.sealed
+        let (c, t2) = next(t, n)
+        return (lo + c, t2)
+    let top = bit_length(n - 1)
+    let (v1, s1) = split_step(t.state)
+    let magnitude = (v1 & max_positive()) % (top + 1)
+    let (v2, s2) = split_step(s1)
+    let span = math.min(n, 1 << magnitude)
+    let c = (v2 & max_positive()) % span
+    (lo + c, recorded(t, c, s2, t.pos, false))
 
 // The transcript so far.
 //
@@ -178,7 +178,7 @@ pub fn next_small(t: Tape, lo: Int, hi: Int) -> (Int, Tape)
 //     println("${list.len(tape.choices_of(tape.from_seed(42)))}")
 // ```
 pub fn choices_of(t: Tape) -> [Int]
-    todo("proptest-core-nv.tape.choices_of")
+    list.clone(t.drawn)
 
 // The seed this tape started from.
 //
@@ -189,11 +189,11 @@ pub fn choices_of(t: Tape) -> [Int]
 //     println("${tape.seed_of(tape.from_seed(42))}")
 // ```
 pub fn seed_of(t: Tape) -> Int
-    todo("proptest-core-nv.tape.seed_of")
+    t.seed
 
 // Whether a sealed tape ran out.
 //
-// **The signal that a case must be discarded rather than judged.** A
+// The signal that a case must be discarded rather than judged. A
 // value assembled after an overrun is made of zeros the strategy never
 // chose, so a property that fails on it has not failed on anything.
 //
@@ -204,7 +204,7 @@ pub fn seed_of(t: Tape) -> Int
 //     println("${tape.is_overrun(tape.replay_of([]))}")
 // ```
 pub fn is_overrun(t: Tape) -> Bool
-    todo("proptest-core-nv.tape.is_overrun")
+    t.overrun
 
 // How many recorded choices a sealed tape has left.
 //
@@ -217,7 +217,9 @@ pub fn is_overrun(t: Tape) -> Bool
 //     println("${tape.remaining(tape.replay_of([1, 2]))}")
 // ```
 pub fn remaining(t: Tape) -> Int
-    todo("proptest-core-nv.tape.remaining")
+    if not t.sealed
+        return 0 - 1
+    list.len(t.replay) - t.pos
 
 // The splitmix64 step, exposed.
 //
@@ -227,8 +229,8 @@ pub fn remaining(t: Tape) -> Int
 // and a caller who wants the same stream for something else does not
 // have to reimplement it.
 //
-// **This function is the compatibility surface.** Changing it changes
-// every seed's meaning, so it changes on a MINOR bump and says so in
+// This function is the compatibility surface. Changing it changes
+// every seed's meaning, so it changes on a minor bump and says so in
 // the changelog.
 //
 // ```novo
@@ -238,5 +240,49 @@ pub fn remaining(t: Tape) -> Int
 //     let (v, _) = tape.split_step(42)
 //     println("${v != 0}")
 // ```
-pub fn split_step(state: Int) -> (Int, Int)
-    todo("proptest-core-nv.tape.split_step")
+pub @wrapping
+fn split_step(state: Int) -> (Int, Int)
+    let s = state + golden_gamma()
+    var z = s
+    z = (z ^ (z >>> 30)) * mix_one()
+    z = (z ^ (z >>> 27)) * mix_two()
+    (z ^ (z >>> 31), s)
+
+// The splitmix64 constants, as the signed integers that carry the same
+// 64 bits: 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9 and 0x94D049BB133111EB.
+fn golden_gamma() -> Int
+    0 - 7046029254386353131
+
+fn mix_one() -> Int
+    0 - 4658895280553007687
+
+fn mix_two() -> Int
+    0 - 7723592293110705685
+
+// Every bit but the sign: masking a draw with it gives a value in
+// `0 ..= Int.max`.
+fn max_positive() -> Int
+    9223372036854775807
+
+// How many bits `n` takes, 0 for 0.
+fn bit_length(n: Int) -> Int
+    var count = 0
+    var v = n
+    while v > 0
+        count = count + 1
+        v = v >> 1
+    count
+
+// The tape after one draw: the choice appended to the transcript, the
+// generator's state and the replay position moved on.
+fn recorded(t: Tape, c: Int, state: Int, pos: Int, overrun: Bool) -> Tape
+    var drawn = list.clone(t.drawn)
+    list.push(drawn, c)
+    Tape { state: state, seed: t.seed, replay: t.replay, pos: pos, drawn: drawn,
+           sealed: t.sealed, overrun: t.overrun or overrun }
+
+// The same tape marked overrun: what a filter answers when no draw
+// passed, so the case is discarded.
+fn overrun_of(t: Tape) -> Tape
+    Tape { state: t.state, seed: t.seed, replay: t.replay, pos: t.pos, drawn: t.drawn,
+           sealed: t.sealed, overrun: true }
