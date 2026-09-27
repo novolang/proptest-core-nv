@@ -111,7 +111,7 @@ pub fn from_draw<T>(f: fn(Tape) -> (T, Tape)) -> PropStrategy<T>
 //     strategy.just(0)
 // ```
 pub fn just<T>(v: T) -> PropStrategy<T>
-    PropStrategy { draw: t => just_draw(t, v) }
+    PropStrategy { draw: t => (v, t) }
 
 // An integer in `[lo, hi]`, inclusive at both ends.
 //
@@ -147,7 +147,7 @@ pub fn int_range(lo: Int, hi: Int) -> PropStrategy<Int>
 //     strategy.int_any()
 // ```
 pub fn int_any() -> PropStrategy<Int>
-    PropStrategy { draw: t => int_any_draw(t) }
+    PropStrategy { draw: int_any_draw }
 
 // A float in `[lo, hi)`.
 //
@@ -194,7 +194,7 @@ pub fn float_special() -> PropStrategy<Float>
 //     strategy.bool_any()
 // ```
 pub fn bool_any() -> PropStrategy<Bool>
-    PropStrategy { draw: t => bool_draw(t) }
+    PropStrategy { draw: bool_draw }
 
 // A string of `lo` to `hi` bytes from a class.
 //
@@ -405,10 +405,6 @@ pub fn flat_map<A, B>(g: PropStrategy<A>, f: fn(A) -> PropStrategy<B>) -> PropSt
 // ```
 pub fn sample_of<T>(vs: [T]) -> PropStrategy<T>
     PropStrategy { draw: t => sample_draw(t, vs) }
-
-// `v`, and the tape as it was: `just` draws nothing.
-fn just_draw<T>(t: Tape, v: T) -> (T, Tape)
-    (v, t)
 
 // An integer in `[lo, hi]` from one choice: choice `c` is `lo + c`.
 fn int_between(t: Tape, lo: Int, hi: Int) -> (Int, Tape)
