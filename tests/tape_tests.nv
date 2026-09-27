@@ -256,3 +256,41 @@ fn test_a_candidate_names_the_pass_that_made_it() [io]
             test.assert(t.at >= 0)
             test.assert(list.len(t.candidate) < 3)
         None    => test.fail("a three-choice transcript has reductions to try")
+
+@test
+fn test_a_kept_candidate_that_is_not_simpler_leaves_the_best_alone() [io]
+    test.case("a runner may hand back a transcript no simpler than the best")
+    let p = shrink.plan_from([5])
+    match shrink.next_try(p)
+        Some(t) =>
+            let kept = shrink.keep(p, ShrinkTry { candidate: [9, 9], by_pass: t.by_pass, at: t.at })
+            test.assert(shrink.best_of(kept) == [5])
+
+            test.case("and the accepted count still grows")
+            test.assert(shrink.shrinks_of(kept) == 1)
+
+        None    => test.fail("a one-choice transcript has reductions to try")
+
+@test
+fn test_a_round_that_accepted_something_starts_another() [io]
+    // The first round over [2] keeps only the halving to [1].  Every
+    // other candidate is rejected, so the round ends with one shrink,
+    // and the next delete candidate comes from a new round.
+    var p = shrink.plan_from([2])
+    var kept_half = false
+    var steps = 0
+    while not shrink.is_done(p) and steps < 1000
+        steps = steps + 1
+        let Some(t) = shrink.next_try(p) else break
+        if not kept_half and t.by_pass == PassHalveChoice
+            p = shrink.keep(p, t)
+            kept_half = true
+        else if kept_half and t.by_pass == PassDeleteSpan
+            p = shrink.keep(p, t)
+        else
+            p = shrink.reject(p, t)
+
+    test.case("the second round deletes the last choice")
+    test.assert(kept_half)
+    test.assert(shrink.best_of(p) == [])
+    test.assert(shrink.shrinks_of(p) == 2)
