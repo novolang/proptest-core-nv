@@ -22,6 +22,8 @@
 //
 // No function here has an effect.
 
+use tape
+
 // A rule for producing a value from a tape.
 //
 // ```novo

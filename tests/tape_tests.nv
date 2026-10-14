@@ -1,9 +1,6 @@
 // tape_tests.nv — the API suite for the deterministic source, the
 // shrink walk and the property answers.
 //
-// RED ON PURPOSE: every body is a `todo()`.  Run with `--isolate` for
-// one verdict per `@test`.
-//
 // WHAT MAKES THESE CASES POSSIBLE AT ALL is the thing the package is
 // for: there is no randomness in it.  Every case below fixes a seed or
 // a transcript and asserts an exact answer, and none of them is
