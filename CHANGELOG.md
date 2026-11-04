@@ -5,6 +5,14 @@ All notable changes to proptest-core-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.1.2 — 2026-11-04
+
+This release requires novo 0.23.0 or later.
+
+## 0.1.1 — 2026-10-25
+
+A file that names a sibling module's type, function or constant now has the `use` line for that module (E2033, E2003).  No signature and no behaviour changed.
+
 ## 0.1.0 — 2026-09-27
 
 The first implementation of the interface published as 0.0.1.
